@@ -7,6 +7,7 @@ node_modules
 .wrangler
 /.svelte-kit
 /build
+build/*
 
 # OS
 .DS_Store
@@ -21,3 +22,9 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+package-lock.json
+
+server/data/*
+server/public/*
+server/temp/*
