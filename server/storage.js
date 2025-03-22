@@ -142,21 +142,85 @@ async function getApplication(id) {
 async function saveApplication(application) {
   const applications = await getApplications();
 
+  // Make sure documents object exists
+  if (!application.documents) {
+    application.documents = {};
+  }
+
+  // If application has CV/CL template IDs but no document content yet, fetch and store them
+  if (application.cvTemplateId && !application.documents.cvContent) {
+    try {
+      const templates = await getTemplates();
+      const template = templates.find((t) => t.id === application.cvTemplateId);
+      if (template) {
+        application.documents.cvContent = template.content;
+        application.documents.cvOriginalContent = template.content; // Keep original for reference
+      }
+    } catch (err) {
+      console.error("Could not fetch CV template content:", err);
+    }
+  }
+
+  if (
+    application.coverLetterTemplateId &&
+    !application.documents.coverLetterContent
+  ) {
+    try {
+      const templates = await getCoverLetterTemplates();
+      const template = templates.find(
+        (t) => t.id === application.coverLetterTemplateId,
+      );
+      if (template) {
+        application.documents.coverLetterContent = template.content;
+        application.documents.coverLetterOriginalContent = template.content; // Keep original for reference
+      }
+    } catch (err) {
+      console.error("Could not fetch cover letter template content:", err);
+    }
+  }
+
+  // Add version tracking if not present
+  if (!application.revisions) {
+    application.revisions = [];
+  }
+
   if (!application.id) {
     application.id = uuidv4();
     application.createdAt = new Date().toISOString();
+    application.revisions.push({
+      id: uuidv4(),
+      date: new Date().toISOString(),
+      type: "creation",
+      description: "Application created",
+    });
     applications.push(application);
   } else {
     const index = applications.findIndex((a) => a.id === application.id);
     if (index === -1) {
       throw new Error("Application not found");
     }
+
+    // Compare documents to see if they've changed
+    const oldApp = applications[index];
+    const docsChanged =
+      JSON.stringify(oldApp.documents) !==
+      JSON.stringify(application.documents);
+
+    if (docsChanged) {
+      application.revisions.push({
+        id: uuidv4(),
+        date: new Date().toISOString(),
+        type: "document-update",
+        description: "Documents updated",
+      });
+    }
+
     application.updatedAt = new Date().toISOString();
     applications[index] = application;
   }
 
   await fs.writeJson(APPLICATIONS_FILE, applications);
-  return application; // Return the application with ID
+  return application;
 }
 
 async function deleteApplication(id) {

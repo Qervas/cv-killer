@@ -50,6 +50,8 @@ app.use(
 );
 app.use(express.json());
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/build", express.static(path.join(__dirname, "../build")));
+app.use(express.static(path.join(__dirname, "../build")));
 
 // Ensure directories exist
 fs.ensureDirSync(path.join(__dirname, "public/previews"));
@@ -415,8 +417,12 @@ app.post("/api/applications/generate", async (req, res) => {
       applicationId: null,
     };
 
+    // Fetch template content
+    let cvContent = null;
+    let coverLetterContent = null;
+
     try {
-      // Generate CV if template provided
+      // Get CV template and content if provided
       if (cvTemplateId) {
         const templates = await getTemplates();
         const template = templates.find((t) => t.id === cvTemplateId);
@@ -424,6 +430,8 @@ app.post("/api/applications/generate", async (req, res) => {
         if (!template) {
           return res.status(404).json({ error: "CV template not found" });
         }
+
+        cvContent = template.content;
 
         // Output path for CV
         const cvFilename = `cv-${company.name.replace(/\s+/g, "-").toLowerCase()}-${template.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
@@ -444,6 +452,8 @@ app.post("/api/applications/generate", async (req, res) => {
             .status(404)
             .json({ error: "Cover letter template not found" });
         }
+
+        coverLetterContent = template.content;
 
         // Process custom content and prepare data
         const enhancedData = {
@@ -481,12 +491,20 @@ app.post("/api/applications/generate", async (req, res) => {
         status: "Applied",
         statusHistory: [{ status: "Applied", date: new Date().toISOString() }],
         createdAt: new Date().toISOString(),
+        // Store document content
+        documents: {
+          cvContent,
+          coverLetterContent,
+          // Also store the original values to track changes
+          cvOriginalContent: cvContent,
+          coverLetterOriginalContent: coverLetterContent,
+          // Store the rendered values (could be added later)
+          lastRenderedAt: new Date().toISOString(),
+        },
       };
 
       // Save application and ensure we get back the object with ID
-      console.log("Saving application:", newApplication);
       const savedApplication = await saveApplication(newApplication);
-      console.log("Saved application:", savedApplication);
 
       if (!savedApplication || !savedApplication.id) {
         throw new Error("Failed to save application or get ID");
@@ -503,6 +521,153 @@ app.post("/api/applications/generate", async (req, res) => {
     }
   } catch (error) {
     console.error("Error generating application:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add a new endpoint for updating document content
+app.put("/api/applications/:id/document", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { documentType, content } = req.body;
+
+    if (!documentType || !content) {
+      return res
+        .status(400)
+        .json({ error: "Document type and content are required" });
+    }
+
+    // Get the application
+    let application;
+    try {
+      application = await getApplication(id);
+    } catch (err) {
+      return res.status(404).json({ error: "Application not found" });
+    }
+
+    // Create documents object if it doesn't exist
+    if (!application.documents) {
+      application.documents = {};
+    }
+
+    // Update the document content
+    if (documentType === "cv") {
+      application.documents.cvContent = content;
+    } else if (documentType === "coverLetter") {
+      application.documents.coverLetterContent = content;
+    } else {
+      return res.status(400).json({ error: "Invalid document type" });
+    }
+
+    // Save the updated application
+    await saveApplication(application);
+
+    // Return success
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Error updating document:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add an endpoint for re-generating documents
+app.post("/api/applications/:id/regenerate", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { documentType, customContent } = req.body;
+
+    // Get the application
+    let application;
+    try {
+      application = await getApplication(id);
+    } catch (err) {
+      return res.status(404).json({ error: "Application not found" });
+    }
+
+    // Get the company
+    const companies = await getCompanies();
+    const company = companies.find((c) => c.id === application.companyId);
+    if (!company) {
+      return res.status(404).json({ error: "Company not found" });
+    }
+
+    // Prepare result
+    const result = {
+      regenerated: [],
+      paths: {},
+    };
+
+    // Regenerate documents based on documentType
+    if (!documentType || documentType === "cv") {
+      if (application.cvTemplateId && application.documents?.cvContent) {
+        // Output path for CV
+        const cvFilename =
+          application.cvPath ||
+          `cv-${company.name.replace(/\s+/g, "-").toLowerCase()}-${Date.now()}.pdf`;
+        const cvPath = path.join(__dirname, "../build", cvFilename);
+
+        // Compile CV LaTeX to PDF using stored content
+        await compileLatex(
+          application.documents.cvContent,
+          company.data || {},
+          cvPath,
+        );
+
+        // Update application
+        application.cvPath = cvFilename;
+        application.documents.lastRenderedAt = new Date().toISOString();
+        result.regenerated.push("cv");
+        result.paths.cv = cvFilename;
+      }
+    }
+
+    if (!documentType || documentType === "coverLetter") {
+      if (
+        application.coverLetterTemplateId &&
+        application.documents?.coverLetterContent
+      ) {
+        // Process custom content and prepare data
+        const updatedCustomContent =
+          customContent || application.customContent || "";
+        const enhancedData = {
+          companyName: company.name,
+          position: company.position || "",
+          location: company.location || "",
+          customContent: updatedCustomContent,
+          customParagraph1: updatedCustomContent,
+          ...(company.data || {}),
+        };
+
+        // Output path for cover letter
+        const clFilename =
+          application.coverLetterPath ||
+          `cover-letter-${company.name.replace(/\s+/g, "-").toLowerCase()}-${Date.now()}.pdf`;
+        const clPath = path.join(__dirname, "../build", clFilename);
+
+        // Compile cover letter LaTeX to PDF
+        await compileLatex(
+          application.documents.coverLetterContent,
+          enhancedData,
+          clPath,
+        );
+
+        // Update application
+        application.coverLetterPath = clFilename;
+        if (customContent) {
+          application.customContent = customContent;
+        }
+        application.documents.lastRenderedAt = new Date().toISOString();
+        result.regenerated.push("coverLetter");
+        result.paths.coverLetter = clFilename;
+      }
+    }
+
+    // Save the updated application
+    await saveApplication(application);
+
+    res.json(result);
+  } catch (error) {
+    console.error("Error regenerating document:", error);
     res.status(500).json({ error: error.message });
   }
 });
