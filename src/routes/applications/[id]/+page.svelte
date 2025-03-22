@@ -3,6 +3,7 @@
     import { page } from "$app/stores";
     import { getApplication, saveApplication, getCompanies } from "$lib/api";
     import DocumentEditor from "$lib/components/DocumentEditor.svelte";
+    import { formatDateTime, formatRelativeTime } from "$lib/utils";
 
     const id = $page.params.id;
     const isNew = id === "new";
@@ -294,6 +295,7 @@
                     </select>
                 </div>
 
+                <!-- Then in the template, update the date display -->
                 {#if !isNew && application.statusHistory?.length > 0}
                     <div class="form-group">
                         <label>Status History</label>
@@ -306,11 +308,21 @@
                                         {statusEntry.status}
                                     </span>
                                     <span class="status-date"
-                                        >{formatDate(statusEntry.date)}</span
+                                        >{formatDateTime(
+                                            statusEntry.date,
+                                        )}</span
                                     >
                                 </div>
                             {/each}
                         </div>
+                    </div>
+                {/if}
+
+                {#if application?.updatedAt}
+                    <div class="last-updated">
+                        Last updated: {formatRelativeTime(
+                            application.updatedAt,
+                        )}
                     </div>
                 {/if}
 

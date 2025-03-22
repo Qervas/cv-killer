@@ -1,6 +1,7 @@
 <script>
     import { onMount } from "svelte";
     import { page } from "$app/stores";
+    import { formatRelativeTime } from "$lib/utils";
 
     export let content = "";
     export let documentType = ""; // "cv" or "coverLetter"
@@ -13,6 +14,7 @@
     let saving = false;
     let error = null;
     let success = null;
+    export let lastUpdated = null; // Pass in the last updated timestamp
 
     // Function to save document changes
     async function saveDocument() {
@@ -107,6 +109,11 @@
                 <input type="checkbox" bind:checked={showDiff} />
                 <span>Show Changes</span>
             </label>
+            {#if lastUpdated}
+                <div class="last-edited">
+                    Last edited: {formatRelativeTime(lastUpdated)}
+                </div>
+            {/if}
         </div>
     {/if}
 
@@ -267,5 +274,11 @@
         margin: 0.5rem 0;
         border-radius: 4px;
         font-size: 0.9rem;
+    }
+
+    .last-edited {
+        font-size: 0.8rem;
+        color: #777;
+        margin-left: auto;
     }
 </style>

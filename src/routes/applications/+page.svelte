@@ -1,6 +1,7 @@
 <script>
     import { onMount } from "svelte";
     import { getApplications, deleteApplication } from "$lib/api";
+    import { formatDateTime, formatRelativeTime } from "$lib/utils";
 
     let applications = [];
     let loading = true;
@@ -129,7 +130,9 @@
                                 >{app.company?.position ||
                                     "Unknown Position"}</td
                             >
-                            <td>{formatDate(app.createdAt)}</td>
+                            <td title={formatDateTime(app.createdAt)}>
+                                {formatRelativeTime(app.createdAt)}
+                            </td>
                             <td>
                                 <span
                                     class="status-badge {app.status?.toLowerCase()}"

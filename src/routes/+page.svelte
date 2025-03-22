@@ -1,5 +1,6 @@
 <script>
     import { onMount } from "svelte";
+    import { formatDateTime, formatRelativeTime } from "$lib/utils";
     import {
         getTemplates,
         getCompanies,
@@ -198,10 +199,11 @@
                                         >{activity.status}</span
                                     >
                                 {/if}
-                                <span class="activity-date">
-                                    {new Date(
-                                        activity.date,
-                                    ).toLocaleDateString()}
+                                <span
+                                    class="activity-date"
+                                    title={formatDateTime(activity.date)}
+                                >
+                                    {formatRelativeTime(activity.date)}
                                 </span>
                             </div>
                             <div class="activity-action">
@@ -485,5 +487,22 @@
     .activity-status.withdrawn {
         background-color: #e2e3e5;
         color: #41464b;
+    }
+
+    .last-updated {
+        font-size: 0.8rem;
+        color: #777;
+        text-align: right;
+        margin-top: 1rem;
+    }
+
+    .timestamp {
+        color: #666;
+        font-size: 0.85rem;
+    }
+
+    .timestamp-full {
+        font-size: 0.85rem;
+        color: #555;
     }
 </style>
