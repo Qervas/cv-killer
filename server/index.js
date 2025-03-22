@@ -14,6 +14,10 @@ import {
   getCoverLetterTemplates,
   saveCoverLetterTemplate,
   deleteCoverLetterTemplate,
+  getApplications,
+  getApplication,
+  saveApplication,
+  deleteApplication,
 } from "./storage.js";
 
 // ES modules fix for __dirname
@@ -316,6 +320,189 @@ app.post("/api/build", async (req, res) => {
       path: outputPath,
     });
   } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Applications API
+app.get("/api/applications", async (req, res) => {
+  try {
+    const applications = await getApplications();
+
+    // Expand application data with company names etc. for the UI
+    const expandedApplications = await Promise.all(
+      applications.map(async (app) => {
+        try {
+          // Fetch company data if available
+          let companyData = null;
+          if (app.companyId) {
+            const companies = await getCompanies();
+            companyData = companies.find((c) => c.id === app.companyId);
+          }
+
+          return {
+            ...app,
+            companyName: companyData?.name || "Unknown Company",
+            position:
+              companyData?.position || app.position || "Unknown Position",
+          };
+        } catch {
+          return app;
+        }
+      }),
+    );
+
+    res.json(expandedApplications);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.get("/api/applications/:id", async (req, res) => {
+  try {
+    const application = await getApplication(req.params.id);
+    res.json(application);
+  } catch (error) {
+    res.status(404).json({ error: error.message });
+  }
+});
+
+app.post("/api/applications", async (req, res) => {
+  try {
+    const newApplication = req.body;
+    await saveApplication(newApplication);
+    res.status(201).json(newApplication);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.delete("/api/applications/:id", async (req, res) => {
+  try {
+    await deleteApplication(req.params.id);
+    res.status(204).end();
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Add endpoint to generate an application with both CV and cover letter
+app.post("/api/applications/generate", async (req, res) => {
+  try {
+    const {
+      companyId,
+      cvTemplateId,
+      coverLetterTemplateId,
+      customContent,
+      notes,
+    } = req.body;
+
+    if (!companyId) {
+      return res.status(400).json({ error: "Company ID is required" });
+    }
+
+    // Get company data
+    const companies = await getCompanies();
+    const company = companies.find((c) => c.id === companyId);
+    if (!company) {
+      return res.status(404).json({ error: "Company not found" });
+    }
+
+    // Results holder
+    const result = {
+      cvPath: null,
+      coverLetterPath: null,
+      applicationId: null,
+    };
+
+    try {
+      // Generate CV if template provided
+      if (cvTemplateId) {
+        const templates = await getTemplates();
+        const template = templates.find((t) => t.id === cvTemplateId);
+
+        if (!template) {
+          return res.status(404).json({ error: "CV template not found" });
+        }
+
+        // Output path for CV
+        const cvFilename = `cv-${company.name.replace(/\s+/g, "-").toLowerCase()}-${template.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
+        const cvPath = path.join(__dirname, "../build", cvFilename);
+
+        // Compile CV LaTeX to PDF
+        await compileLatex(template.content, company.data || {}, cvPath);
+        result.cvPath = cvFilename;
+      }
+
+      // Generate cover letter if template provided
+      if (coverLetterTemplateId) {
+        const templates = await getCoverLetterTemplates();
+        const template = templates.find((t) => t.id === coverLetterTemplateId);
+
+        if (!template) {
+          return res
+            .status(404)
+            .json({ error: "Cover letter template not found" });
+        }
+
+        // Process custom content and prepare data
+        const enhancedData = {
+          companyName: company.name,
+          position: company.position || "",
+          location: company.location || "",
+          customContent: customContent || "",
+          customParagraph1: customContent || "",
+          ...(company.data || {}),
+        };
+
+        // Output path for cover letter
+        const clFilename = `cover-letter-${company.name.replace(/\s+/g, "-").toLowerCase()}-${template.name.replace(/\s+/g, "-").toLowerCase()}.pdf`;
+        const clPath = path.join(__dirname, "../build", clFilename);
+
+        // Compile cover letter LaTeX to PDF
+        await compileLatex(template.content, enhancedData, clPath);
+        result.coverLetterPath = clFilename;
+      }
+
+      // Create application record
+      const newApplication = {
+        companyId,
+        company: {
+          name: company.name,
+          position: company.position,
+          location: company.location,
+        },
+        cvTemplateId,
+        coverLetterTemplateId,
+        cvPath: result.cvPath,
+        coverLetterPath: result.coverLetterPath,
+        customContent,
+        notes,
+        status: "Applied",
+        statusHistory: [{ status: "Applied", date: new Date().toISOString() }],
+        createdAt: new Date().toISOString(),
+      };
+
+      // Save application and ensure we get back the object with ID
+      console.log("Saving application:", newApplication);
+      const savedApplication = await saveApplication(newApplication);
+      console.log("Saved application:", savedApplication);
+
+      if (!savedApplication || !savedApplication.id) {
+        throw new Error("Failed to save application or get ID");
+      }
+
+      result.applicationId = savedApplication.id;
+
+      res.json(result);
+    } catch (docError) {
+      console.error("Error in document generation:", docError);
+      return res
+        .status(500)
+        .json({ error: `Document generation failed: ${docError.message}` });
+    }
+  } catch (error) {
+    console.error("Error generating application:", error);
     res.status(500).json({ error: error.message });
   }
 });

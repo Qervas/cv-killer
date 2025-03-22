@@ -4,35 +4,56 @@
         getTemplates,
         getCompanies,
         getCoverLetterTemplates,
+        getApplications,
     } from "$lib/api";
 
     let templates = [];
     let coverLetterTemplates = [];
     let companies = [];
+    let applications = [];
     let loading = true;
     let error = null;
     let stats = {
         totalTemplates: 0,
         totalCoverLetterTemplates: 0,
         totalCompanies: 0,
+        totalApplications: 0,
+        applicationStatus: {},
         recentActivity: [],
     };
 
     onMount(async () => {
         try {
-            [templates, coverLetterTemplates, companies] = await Promise.all([
-                getTemplates(),
-                getCoverLetterTemplates(),
-                getCompanies(),
-            ]);
+            [templates, coverLetterTemplates, companies, applications] =
+                await Promise.all([
+                    getTemplates(),
+                    getCoverLetterTemplates(),
+                    getCompanies(),
+                    getApplications(),
+                ]);
 
             // Calculate stats
             stats.totalTemplates = templates.length;
             stats.totalCoverLetterTemplates = coverLetterTemplates.length;
             stats.totalCompanies = companies.length;
+            stats.totalApplications = applications.length;
 
-            // Create recent activity by combining and sorting templates, cover letters and companies
+            // Calculate application status counts
+            stats.applicationStatus = applications.reduce((acc, app) => {
+                const status = app.status || "Unknown";
+                acc[status] = (acc[status] || 0) + 1;
+                return acc;
+            }, {});
+
+            // Create recent activity
             const activities = [
+                ...applications.map((a) => ({
+                    type: "application",
+                    name: `${a.company?.name || "Unknown"} - ${a.company?.position || "Unknown Position"}`,
+                    status: a.status,
+                    date: a.updatedAt || a.createdAt,
+                    id: a.id,
+                })),
                 ...templates.map((t) => ({
                     type: "template",
                     name: t.name,
@@ -75,6 +96,27 @@
         <div class="loading">Loading dashboard data...</div>
     {:else}
         <div class="stats-grid">
+            <div class="stat-card highlight">
+                <h2>Applications</h2>
+                <div class="stat-value">{stats.totalApplications}</div>
+                <div class="status-counts">
+                    {#each Object.entries(stats.applicationStatus) as [status, count]}
+                        <div class="status-count">
+                            <span class="status-badge {status.toLowerCase()}"
+                                >{status}</span
+                            >
+                            <span class="count">{count}</span>
+                        </div>
+                    {/each}
+                </div>
+                <div class="stat-action">
+                    <a href="/applications" class="button">View Applications</a>
+                    <a href="/applications/new-complete" class="button primary"
+                        >+ New</a
+                    >
+                </div>
+            </div>
+
             <div class="stat-card">
                 <h2>CV Templates</h2>
                 <div class="stat-value">{stats.totalTemplates}</div>
@@ -106,24 +148,23 @@
 
         <div class="generator-cards">
             <div class="generator-card">
-                <h2>Create CV</h2>
+                <h2>Create Application</h2>
                 <p>
-                    Generate a tailored CV by combining a template with company
-                    details
+                    Generate a complete job application with CV and cover letter
                 </p>
                 <div class="generator-action">
-                    <a href="/generator" class="button primary">Create CV</a>
+                    <a href="/applications/new-complete" class="button primary"
+                        >New Complete Application</a
+                    >
                 </div>
             </div>
 
             <div class="generator-card">
-                <h2>Create Cover Letter</h2>
-                <p>
-                    Generate a personalized cover letter for your job
-                    application
-                </p>
-                <div class="generator-action">
-                    <a href="/cover-letter-generator" class="button primary"
+                <h2>Individual Documents</h2>
+                <p>Generate individual documents separately</p>
+                <div class="generator-buttons">
+                    <a href="/generator" class="button">Create CV</a>
+                    <a href="/cover-letter-generator" class="button"
                         >Create Cover Letter</a
                     >
                 </div>
@@ -143,12 +184,20 @@
                                     ? "CV"
                                     : activity.type === "cover-letter"
                                       ? "CL"
-                                      : "C"}
+                                      : activity.type === "application"
+                                        ? "APP"
+                                        : "C"}
                             </div>
                             <div class="activity-details">
                                 <span class="activity-name"
                                     >{activity.name}</span
                                 >
+                                {#if activity.status}
+                                    <span
+                                        class="activity-status {activity.status.toLowerCase()}"
+                                        >{activity.status}</span
+                                    >
+                                {/if}
                                 <span class="activity-date">
                                     {new Date(
                                         activity.date,
@@ -161,7 +210,9 @@
                                         ? 'cover-letters'
                                         : activity.type === 'template'
                                           ? 'templates'
-                                          : 'companies'}/{activity.id}"
+                                          : activity.type === 'application'
+                                            ? 'applications'
+                                            : 'companies'}/{activity.id}"
                                     class="button small">View</a
                                 >
                             </div>
@@ -174,6 +225,7 @@
 </div>
 
 <style>
+    /* Complete Dashboard Styles */
     .dashboard {
         max-width: 1200px;
         margin: 0 auto;
@@ -283,6 +335,10 @@
         background-color: #fd7e14;
     }
 
+    .activity-type.application {
+        background-color: #0dcaf0;
+    }
+
     .activity-details {
         flex-grow: 1;
         display: flex;
@@ -333,5 +389,101 @@
         text-align: center;
         padding: 2rem;
         color: #666;
+    }
+
+    /* New styles for applications section */
+    .stat-card.highlight {
+        background-color: #e6f7ff;
+        border-left: 4px solid #007bff;
+    }
+
+    .status-counts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+    }
+
+    .status-count {
+        display: flex;
+        align-items: center;
+        gap: 0.25rem;
+    }
+
+    .status-badge {
+        display: inline-block;
+        padding: 0.15rem 0.4rem;
+        border-radius: 1rem;
+        font-size: 0.7rem;
+        font-weight: 500;
+        text-transform: uppercase;
+    }
+
+    .status-badge.applied {
+        background-color: #cff4fc;
+        color: #055160;
+    }
+
+    .status-badge.interview {
+        background-color: #fff3cd;
+        color: #664d03;
+    }
+
+    .status-badge.offer {
+        background-color: #d1e7dd;
+        color: #0f5132;
+    }
+
+    .status-badge.rejected {
+        background-color: #f8d7da;
+        color: #842029;
+    }
+
+    .status-badge.withdrawn {
+        background-color: #e2e3e5;
+        color: #41464b;
+    }
+
+    .count {
+        font-size: 0.8rem;
+        font-weight: bold;
+    }
+
+    .generator-buttons {
+        display: flex;
+        gap: 0.5rem;
+    }
+
+    .activity-status {
+        display: inline-block;
+        margin-left: 0.5rem;
+        padding: 0.1rem 0.3rem;
+        font-size: 0.7rem;
+        border-radius: 3px;
+    }
+
+    .activity-status.applied {
+        background-color: #cff4fc;
+        color: #055160;
+    }
+
+    .activity-status.interview {
+        background-color: #fff3cd;
+        color: #664d03;
+    }
+
+    .activity-status.offer {
+        background-color: #d1e7dd;
+        color: #0f5132;
+    }
+
+    .activity-status.rejected {
+        background-color: #f8d7da;
+        color: #842029;
+    }
+
+    .activity-status.withdrawn {
+        background-color: #e2e3e5;
+        color: #41464b;
     }
 </style>
