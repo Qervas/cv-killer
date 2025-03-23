@@ -28,3 +28,6 @@ package-lock.json
 server/data/*
 server/public/*
 server/temp/*
+
+tinytex/*
+dist/*

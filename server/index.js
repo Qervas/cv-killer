@@ -20,19 +20,72 @@ import {
   deleteApplication,
 } from "./storage.js";
 
-// ES modules fix for __dirname
+import {
+  DATA_DIR,
+  PUBLIC_DIR,
+  PREVIEWS_DIR,
+  BUILD_DIR,
+  pathInfo,
+} from "./server-paths.js";
+
+import latexInstaller from "./latex-installer.js";
+
+// ES modules fix for __dirname (must be at the top)
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Define data directory
-const DATA_DIR = path.join(__dirname, "data");
+try {
+  console.log("Starting server process, environment:", {
+    cwd: process.cwd(),
+    dirname: __dirname,
+    env: {
+      NODE_ENV: process.env.NODE_ENV,
+      ELECTRON_RUN: process.env.ELECTRON_RUN,
+      USER_DATA_PATH: process.env.USER_DATA_PATH,
+    },
+  });
+
+  // Ensure directories exist
+  fs.ensureDirSync(DATA_DIR);
+  fs.ensureDirSync(PUBLIC_DIR);
+  fs.ensureDirSync(PREVIEWS_DIR);
+  fs.ensureDirSync(BUILD_DIR);
+} catch (startupError) {
+  console.error("Critical server startup error:", startupError);
+  process.exit(1);
+}
 
 const app = express();
-const PORT = 3001;
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception in server process:", error);
+  // Continue running if possible
+});
+
+// Handle process communication errors
+process.on("disconnect", () => {
+  console.log("Parent process has been disconnected. Shutting down...");
+  process.exit(0);
+});
+
+// Handle graceful shutdown
+process.on("SIGTERM", () => {
+  console.log("Received SIGTERM. Shutting down gracefully...");
+  // Close any resources, DB connections, etc.
+  process.exit(0);
+});
+
+const PORT = process.env.PORT || 3001;
 const COVER_LETTER_TEMPLATES_FILE = path.join(
   DATA_DIR,
   "cover-letter-templates.json",
 );
+
+let latexInstallStatus = {
+  isInstalling: false,
+  status: "Not started",
+  progress: 0,
+  error: null,
+};
 
 // Ensure data directory exists
 fs.ensureDirSync(DATA_DIR);
@@ -672,6 +725,199 @@ app.post("/api/applications/:id/regenerate", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+app.get("/api/latex/status", async (req, res) => {
+  try {
+    const bundledLatex = await latexInstaller.isLatexInstalled();
+    const systemLatex = await latexInstaller.findSystemLatex();
+
+    res.json({
+      installed: bundledLatex || !!systemLatex,
+      systemLatex: systemLatex,
+      bundledLatex: bundledLatex,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post("/api/latex/install", async (req, res) => {
+  console.log("LaTeX installation started");
+  let progress = 0;
+
+  // Set up SSE for progress updates
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no"); // Disable nginx buffering
+
+  // Prevent timeout
+  req.socket.setTimeout(0);
+  res.socket.setTimeout(0);
+
+  const sendProgress = (data) => {
+    try {
+      console.log("Sending progress update:", data);
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+      // Flush the response stream if possible
+      if (res.flush && typeof res.flush === "function") {
+        res.flush();
+      }
+    } catch (err) {
+      console.error("Error sending progress:", err);
+    }
+  };
+
+  try {
+    sendProgress({ status: "Starting LaTeX installation...", progress: 0 });
+
+    const result = await latexInstaller.installTinyTex((progressData) => {
+      sendProgress(progressData);
+    });
+
+    console.log("LaTeX installation process finished, result:", result);
+
+    if (result) {
+      sendProgress({ status: "LaTeX installation complete!", progress: 100 });
+      res.end();
+    } else {
+      sendProgress({ status: "LaTeX installation failed", progress: -1 });
+      res.end();
+    }
+  } catch (error) {
+    console.error("LaTeX installation error:", error);
+    sendProgress({ status: `Error: ${error.message}`, progress: -1 });
+    res.end();
+  }
+});
+
+app.get("/api/health", (req, res) => {
+  res.json({
+    status: "ok",
+    time: new Date().toISOString(),
+    serverInfo: {
+      port: PORT,
+      paths: pathInfo,
+      environment: process.env.NODE_ENV || "development",
+    },
+  });
+});
+
+app
+  .listen(PORT, () => {
+    console.log(`Server running on http://localhost:${PORT}`);
+
+    // Signal ready state - important for Electron integration
+    if (process.send) {
+      try {
+        process.send("SERVER_READY");
+        console.log("Sent SERVER_READY signal to parent process");
+      } catch (err) {
+        console.error("Failed to send ready signal:", err);
+      }
+    }
+  })
+  .on("error", (err) => {
+    if (err.code === "EADDRINUSE") {
+      console.error(`Port ${PORT} is already in use. Trying ${PORT + 1}...`);
+      app.listen(PORT + 1, () => {
+        console.log(`Server running on http://localhost:${PORT + 1}`);
+        if (process.send) {
+          try {
+            process.send("SERVER_READY");
+            console.log("Sent SERVER_READY signal to parent process");
+          } catch (err) {
+            console.error("Failed to send ready signal:", err);
+          }
+        }
+      });
+    } else {
+      console.error("Failed to start server:", err);
+      process.exit(1);
+    }
+  });
+
+if (process.send) {
+  setTimeout(() => {
+    try {
+      process.send({ type: "SERVER_READY", port: PORT });
+      console.log("Sent SERVER_READY signal to parent process");
+    } catch (err) {
+      console.error("Failed to send ready signal:", err);
+    }
+  }, 500); // Small delay to ensure we capture the correct port
+}
+
+// Handle shutdown gracefully
+process.on("SIGTERM", () => {
+  console.log("Received SIGTERM. Shutting down gracefully...");
+  server.close(() => {
+    console.log("Server closed");
+    process.exit(0);
+  });
+});
+
+// Start the installation process without blocking
+app.post("/api/latex/install-start", async (req, res) => {
+  // If already installing, return current status
+  if (latexInstallStatus.isInstalling) {
+    return res.json({
+      message: "Installation already in progress",
+      status: latexInstallStatus.status,
+      progress: latexInstallStatus.progress,
+    });
+  }
+
+  // Reset installation status
+  latexInstallStatus = {
+    isInstalling: true,
+    status: "Starting installation...",
+    progress: 10,
+    error: null,
+  };
+
+  // Send immediate response
+  res.json({ message: "Installation started", success: true });
+
+  // Start the installation process in the background
+  try {
+    console.log("Starting LaTeX installation in the background");
+
+    // Define a progress callback that updates the global status
+    const progressCallback = (data) => {
+      console.log("Installation progress:", data);
+      latexInstallStatus.status = data.status;
+      latexInstallStatus.progress = data.progress;
+
+      if (data.progress === -1) {
+        latexInstallStatus.error = data.status;
+        latexInstallStatus.isInstalling = false;
+      }
+    };
+
+    // Run the installation
+    const result = await latexInstaller.installTinyTex(progressCallback);
+
+    if (result) {
+      console.log("LaTeX installation completed successfully");
+      latexInstallStatus.status = "Installation complete!";
+      latexInstallStatus.progress = 100;
+    } else {
+      console.log("LaTeX installation failed");
+      latexInstallStatus.status = "Installation failed";
+      latexInstallStatus.progress = -1;
+      latexInstallStatus.error = "Installation process failed";
+    }
+  } catch (error) {
+    console.error("Error during LaTeX installation:", error);
+    latexInstallStatus.status = `Error: ${error.message}`;
+    latexInstallStatus.progress = -1;
+    latexInstallStatus.error = error.message;
+  } finally {
+    latexInstallStatus.isInstalling = false;
+  }
+});
+
+// Get the current installation status
+app.get("/api/latex/install-status", (req, res) => {
+  res.json(latexInstallStatus);
 });

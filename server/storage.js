@@ -6,8 +6,9 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+import { DATA_DIR } from "./server-paths.js";
+
 // Path to data files
-const DATA_DIR = path.join(__dirname, "data");
 const TEMPLATES_FILE = path.join(DATA_DIR, "templates.json");
 const COMPANIES_FILE = path.join(DATA_DIR, "companies.json");
 const COVER_LETTER_TEMPLATES_FILE = path.join(
@@ -15,7 +16,6 @@ const COVER_LETTER_TEMPLATES_FILE = path.join(
   "cover-letter-templates.json",
 );
 const APPLICATIONS_FILE = path.join(DATA_DIR, "applications.json");
-
 // Ensure data directory exists
 fs.ensureDirSync(DATA_DIR);
 

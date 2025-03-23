@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
+import latexInstaller from "./latex-installer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,10 +36,41 @@ async function compileLatex(templateContent, companyData, outputPath) {
     const processedFilePath = path.join(tempDir, "output.tex");
     await fs.writeFile(processedFilePath, processedTemplate);
 
-    // Run pdflatex with error capturing
-    const stdout = await new Promise((resolve, reject) => {
+    // Find a LaTeX executable - prioritize system LaTeX over bundled
+    let pdflatexCmd;
+
+    // First try to find system LaTeX
+    try {
+      const systemLatexPath = await latexInstaller.findSystemLatex();
+      if (systemLatexPath) {
+        pdflatexCmd = systemLatexPath;
+        console.log("Using system LaTeX at:", pdflatexCmd);
+      } else {
+        // Fall back to bundled LaTeX only if it actually exists
+        const bundledPath = latexInstaller.getBinaryPath();
+        try {
+          await fs.access(bundledPath);
+          pdflatexCmd = bundledPath;
+          console.log("Using bundled LaTeX at:", pdflatexCmd);
+        } catch (err) {
+          throw new Error(
+            "No LaTeX installation found. Please install LaTeX to generate PDFs.",
+          );
+        }
+      }
+    } catch (err) {
+      // Last resort - try to use "pdflatex" directly from PATH
+      pdflatexCmd = "pdflatex";
+      console.log("Falling back to system pdflatex on PATH");
+    }
+
+    console.log(`Using LaTeX from: ${pdflatexCmd}`);
+    console.log(`Processing file: ${processedFilePath}`);
+
+    // Run pdflatex with error capturing - first run
+    await new Promise((resolve, reject) => {
       exec(
-        `pdflatex -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
+        `${pdflatexCmd} -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
         { maxBuffer: 1024 * 1024 * 10 }, // Increase buffer size for large logs
         (error, stdout, stderr) => {
           if (error && error.code !== 0) {
@@ -54,7 +86,7 @@ async function compileLatex(templateContent, companyData, outputPath) {
     // Run second pass for references
     await new Promise((resolve, reject) => {
       exec(
-        `pdflatex -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
+        `${pdflatexCmd} -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
         { maxBuffer: 1024 * 1024 * 10 },
         (error, stdout, stderr) => {
           if (error && error.code !== 0) {
