@@ -111,14 +111,27 @@ if (!fs.existsSync(COVER_LETTER_TEMPLATES_FILE)) {
 
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173"], // Allow both localhost and 127.0.0.1
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "app://.", "*"],
     credentials: true,
   }),
 );
+
 app.use(express.json());
-app.use(express.static(path.join(__dirname, "public")));
+app.use("/public", express.static(path.join(__dirname, "public")));
 app.use("/build", express.static(path.join(__dirname, "../build")));
 app.use(express.static(path.join(__dirname, "../build")));
+
+// Also serve from user data path in Electron environment
+if (process.env.ELECTRON_RUN === "true" && process.env.USER_DATA_PATH) {
+  app.use(
+    "/build",
+    express.static(path.join(process.env.USER_DATA_PATH, "build")),
+  );
+  app.use(
+    "/public",
+    express.static(path.join(process.env.USER_DATA_PATH, "public")),
+  );
+}
 
 // Ensure directories exist
 fs.ensureDirSync(path.join(__dirname, "public/previews"));
@@ -934,4 +947,20 @@ app.post("/api/latex/install-start", async (req, res) => {
 // Get the current installation status
 app.get("/api/latex/install-status", (req, res) => {
   res.json(latexInstallStatus);
+});
+
+// Serve SPA routes for client-side navigation
+app.get("*", (req, res) => {
+  // Skip API routes
+  if (req.url.startsWith("/api/")) {
+    return res.status(404).json({ error: "API endpoint not found" });
+  }
+
+  // Serve the index.html for all other routes
+  const indexPath = path.join(__dirname, "../build/index.html");
+  if (fs.existsSync(indexPath)) {
+    res.sendFile(indexPath);
+  } else {
+    res.status(404).send("Not found");
+  }
 });

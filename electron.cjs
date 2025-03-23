@@ -149,18 +149,40 @@ function createDebugWindow() {
 // Function to send logs to debug window
 function sendToDebugWindow(message, type = "info") {
   if (debugWindow && !debugWindow.isDestroyed()) {
-    debugWindow.webContents
-      .executeJavaScript(
-        `
-      const logEvent = new MessageEvent('message', {
-        data: { type: 'log', message: ${JSON.stringify(message)}, logType: '${type}' }
+    try {
+      // Escape special characters that might break the JavaScript
+      const safeMessage = String(message).replace(/[\\"\n\r\t]/g, (match) => {
+        return {
+          "\\": "\\\\",
+          '"': '\\"',
+          "\n": "\\n",
+          "\r": "\\r",
+          "\t": "\\t",
+        }[match];
       });
-      window.dispatchEvent(logEvent);
-    `,
-      )
-      .catch((err) =>
-        console.error("Failed to send log to debug window:", err),
-      );
+
+      // Simpler approach to sending messages
+      debugWindow.webContents
+        .executeJavaScript(
+          `
+        try {
+          const logLine = document.createElement('div');
+          logLine.className = '${type}';
+          logLine.textContent = "${safeMessage}";
+          document.getElementById('logs').appendChild(logLine);
+          window.scrollTo(0, document.body.scrollHeight);
+        } catch (e) {
+          console.error("Error adding log:", e);
+        }
+      `,
+        )
+        .catch((err) => {
+          // Just log the error locally and continue
+          console.error("Debug window logging error:", err.message);
+        });
+    } catch (error) {
+      console.error("Failed to format debug message:", error);
+    }
   }
 }
 
@@ -610,11 +632,11 @@ async function createWindow() {
       }
 
       // Try to connect to the server
-      let serverAvailable = await checkServerAvailability(appUrl);
+      let serverAvailable = await checkServerWithRetry(appUrl, 5, 1000);
       if (serverAvailable) {
         mainWindow.loadURL(appUrl);
       } else {
-        throw new Error("Could not connect to server");
+        throw new Error("Could not connect to server after multiple attempts");
       }
     } catch (err) {
       console.error("Failed to start server:", err);
@@ -708,12 +730,14 @@ async function createWindow() {
   }
 }
 
-// Helper function to check if server is available
 async function checkServerAvailability(url) {
   return new Promise((resolve) => {
     try {
+      console.log(`Checking server availability at ${url}...`);
+
       const http = require("http");
       const testRequest = http.get(url, (res) => {
+        console.log(`Server responded with status: ${res.statusCode}`);
         resolve(res.statusCode === 200);
       });
 
@@ -722,10 +746,10 @@ async function checkServerAvailability(url) {
         resolve(false);
       });
 
-      // Set a timeout
-      testRequest.setTimeout(3000, () => {
+      // Set timeout to 5 seconds
+      testRequest.setTimeout(5000, () => {
         testRequest.destroy();
-        console.log("Server check timed out");
+        console.log("Server check timed out after 5 seconds");
         resolve(false);
       });
     } catch (err) {
@@ -733,6 +757,31 @@ async function checkServerAvailability(url) {
       resolve(false);
     }
   });
+}
+
+// Helper function to check if server is available
+async function checkServerWithRetry(url, maxRetries = 3, retryDelay = 1000) {
+  console.log(`Checking server with ${maxRetries} retries...`);
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`Attempt ${attempt}/${maxRetries} to connect to server...`);
+
+    const available = await checkServerAvailability(url);
+    if (available) {
+      console.log(`Server is available on attempt ${attempt}`);
+      return true;
+    }
+
+    if (attempt < maxRetries) {
+      console.log(
+        `Server not available, waiting ${retryDelay}ms before retry...`,
+      );
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  console.log(`Server not available after ${maxRetries} attempts`);
+  return false;
 }
 
 // App lifecycle events
