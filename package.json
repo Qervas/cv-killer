@@ -31,14 +31,6 @@
     ],
     "extraResources": [
       {
-        "from": "server/server-minimal.cjs",
-        "to": "app/server/server-minimal.cjs"
-      },
-      {
-        "from": "server/server-minimal.js",
-        "to": "app/server/server-minimal.js"
-      },
-      {
         "from": "server",
         "to": "app/server",
         "filter": [

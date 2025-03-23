@@ -1,44 +1,17 @@
-console.log("===== SERVER STARTING =====");
+console.log("===== FULL SERVER STARTING =====");
 console.log("Current directory:", process.cwd());
 console.log("Node version:", process.version);
+console.log("Environment:", {
+  NODE_ENV: process.env.NODE_ENV,
+  ELECTRON_RUN: process.env.ELECTRON_RUN,
+  USER_DATA_PATH: process.env.USER_DATA_PATH,
+});
 
-// Test imports to identify problematic modules
-async function testImports() {
-  const modules = [
-    "express",
-    "cors",
-    "fs-extra",
-    "path",
-    "url",
-    "./latex.js",
-    "./storage.js",
-    "./server-paths.js",
-    "./latex-installer.js",
-  ];
-
-  console.log("Testing imports...");
-  for (const mod of modules) {
-    try {
-      console.log(`Testing import: ${mod}`);
-      if (mod.startsWith("./")) {
-        // This is a relative import, just log it without actually importing
-        console.log(`Relative module import will be tested: ${mod}`);
-      } else {
-        // For npm modules, actually try to import them
-        await import(mod);
-        console.log(`✓ Successfully imported ${mod}`);
-      }
-    } catch (err) {
-      console.error(`✗ Failed to import ${mod}:`, err.message);
-      // We're not exiting here, just logging and continuing to test other modules
-    }
-  }
-  console.log("Import tests completed");
-}
-
-// Run the test before real imports
-await testImports();
-
+// Global error handler to prevent crashes
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception in server process:", error);
+  // Continue running if possible
+});
 import express from "express";
 import cors from "cors";
 import fs from "fs-extra";

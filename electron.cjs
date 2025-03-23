@@ -279,8 +279,8 @@ async function initializeServer() {
 
     // Determine which server script to use - use CommonJS version for production
     const serverPath = isDev
-      ? path.join(__dirname, "server/server-minimal.js")
-      : path.join(process.resourcesPath, "app", "server", "server-minimal.cjs"); // Use CJS in production
+      ? path.join(__dirname, "server/index.js")
+      : path.join(process.resourcesPath, "app", "server", "index.js");
 
     console.log(`Using server path: ${serverPath}`);
 
