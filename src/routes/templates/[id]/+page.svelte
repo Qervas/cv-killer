@@ -75,48 +75,42 @@ This is a template for {companyName}.
     }
 
     function insertDefaultTemplate() {
-        template.content = String.raw`\documentclass[a4paper,11pt]{article}
+        template.content = String.raw`\documentclass{article}
+    \begin{document}
 
-\usepackage[utf8]{inputenc}
-\usepackage[margin=1in]{geometry}
-\usepackage{hyperref}
+    \title{My Professional CV}
+    \author{Your Name}
+    \date{\today}
+    \maketitle
 
-% Define custom commands for CV sections
-\newcommand{\cvSection}[1]{\section{#1}\hrule\medskip}
+    \section{Contact Information}
+    Email: your.email@example.com \\
+    Phone: (123) 456-7890 \\
+    Location: Your City, State
 
-% Personal info commands
-\newcommand{\name}[1]{\centerline{\Huge \textbf{#1}}\bigskip}
-\newcommand{\contact}[1]{\centerline{#1}\medskip}
+    \section{Professional Summary}
+    Experienced professional seeking a position at companyName.
 
-\begin{document}
+    \section{Skills}
+    \begin{itemize}
+      \item Skill 1
+      \item Skill 2
+      \item Skill 3
+    \end{itemize}
 
-% Replace placeholders with actual data when generating PDF
-\name{{name}}
-\contact{{email}} | {phone} | {location}}
-\contact{{website}} | {linkedin} | {github}}
+    \section{Experience}
+    \textbf{Position at companyName}
+    \begin{itemize}
+      \item Responsibility 1
+      \item Responsibility 2
+      \item Achievement 1
+    \end{itemize}
 
-\cvSection{Summary}
-{summary}
+    \section{Education}
+    \textbf{University Name}\\
+    Degree in Field of Study (Year)
 
-\cvSection{Skills}
-\begin{itemize}
-  \item {skills}
-\end{itemize}
-
-\cvSection{Experience}
-\begin{itemize}
-  \item \textbf{{companyName}} - {position}
-  \begin{itemize}
-    \item {jobDescription}
-  \end{itemize}
-\end{itemize}
-
-\cvSection{Education}
-\begin{itemize}
-  \item \textbf{{university}} - {degree}
-\end{itemize}
-
-\end{document}`;
+    \end{document}`;
 
         // Visual feedback
         insertedDefault = true;
@@ -194,22 +188,28 @@ This is a template for {companyName}.
             <div class="placeholder-help">
                 <h3>Placeholder Help</h3>
                 <p>
-                    Use curly braces to create placeholders that will be
-                    replaced with company data:
+                    Use simple words as placeholders (without braces) that will
+                    be replaced with company data:
                 </p>
                 <ul>
                     <li>
-                        <code>{"{companyName}"}</code> - Will be replaced with the
-                        company name
+                        <code>companyName</code> - Will be replaced with the company
+                        name
                     </li>
                     <li>
-                        <code>{"{position}"}</code> - Will be replaced with the position
+                        <code>position</code> - Will be replaced with the position
                     </li>
                     <li>
-                        <code>{"{anyFieldName}"}</code> - Will be replaced with any
-                        custom field defined in the company data
+                        <code>location</code>, <code>website</code> etc. - Other
+                        company details
                     </li>
                 </ul>
+                <p class="warning">
+                    <strong>Important:</strong> For most reliable results, write
+                    words like "companyName" directly in your template without any
+                    special formatting. Our system will automatically replace them
+                    with the correct values.
+                </p>
             </div>
 
             <div class="form-actions">

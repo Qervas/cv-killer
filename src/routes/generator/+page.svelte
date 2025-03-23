@@ -20,6 +20,55 @@
     let error = null;
     let buildResult = null;
 
+    function getDefaultTemplate() {
+        return String.raw`\documentclass[a4paper,11pt]{article}
+
+    \usepackage[utf8]{inputenc}
+    \usepackage[margin=1in]{geometry}
+    \usepackage{hyperref}
+
+    % Define custom commands for CV sections
+    \newcommand{\cvSection}[1]{\section{#1}\hrule\medskip}
+
+    % Personal info commands
+    \newcommand{\name}[1]{\centerline{\Huge \textbf{#1}}\bigskip}
+    \newcommand{\contact}[1]{\centerline{#1}\medskip}
+
+    \begin{document}
+
+    % Your professional identity
+    \name{Your Name}
+    \contact{your.email@example.com | (123) 456-7890 | Your Location}
+    \contact{https://yourwebsite.com | linkedin.com/in/yourname | github.com/yourname}
+
+    \cvSection{Summary}
+    Experienced professional with expertise in the field of technology.
+
+    \cvSection{Skills}
+    \begin{itemize}
+      \item Programming Languages: JavaScript, Python, Java
+      \item Frameworks: React, Vue, Angular, Express
+      \item Tools: Git, Docker, AWS, etc.
+    \end{itemize}
+
+    \cvSection{Experience}
+    \begin{itemize}
+      \item \textbf{Company: {companyName}} - Position: {position}
+      \begin{itemize}
+        \item Worked on various projects
+        \item Led a team of developers
+        \item Successfully delivered projects on time
+      \end{itemize}
+    \end{itemize}
+
+    \cvSection{Education}
+    \begin{itemize}
+      \item \textbf{University Name} - Degree Name (Year)
+    \end{itemize}
+
+    \end{document}`;
+    }
+
     onMount(async () => {
         try {
             [templates, companies] = await Promise.all([

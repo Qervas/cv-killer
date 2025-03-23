@@ -119,6 +119,7 @@ app.use(
 app.use(express.json());
 app.use("/public", express.static(path.join(__dirname, "public")));
 app.use("/build", express.static(path.join(__dirname, "../build")));
+app.use("/previews", express.static(path.join(__dirname, "public/previews")));
 app.use(express.static(path.join(__dirname, "../build")));
 
 // Also serve from user data path in Electron environment
@@ -130,6 +131,10 @@ if (process.env.ELECTRON_RUN === "true" && process.env.USER_DATA_PATH) {
   app.use(
     "/public",
     express.static(path.join(process.env.USER_DATA_PATH, "public")),
+  );
+  app.use(
+    "/previews",
+    express.static(path.join(process.env.USER_DATA_PATH, "public/previews")),
   );
 }
 
@@ -292,13 +297,7 @@ app.post("/api/preview", async (req, res) => {
       });
     }
 
-    // Check if template content is empty
-    if (!template.content || template.content.trim() === "") {
-      return res.status(400).json({ error: "Template content is empty" });
-    }
-
     // Merge data - prioritize additionalData over company data for overrides
-    // First, extract basic company fields
     const basicCompanyData = {
       companyName: company.name,
       position: company.position,
@@ -312,23 +311,28 @@ app.post("/api/preview", async (req, res) => {
       ...(additionalData || {}),
     };
 
-    console.log("Data being used for template:", data); // For debugging
+    console.log("Data being used for template:", data);
 
-    // Output path for the preview PDF
+    // Create a unique filename for the preview
     const previewFilename = `preview-${type}-${templateId}-${companyId}-${Date.now()}.pdf`;
-    const previewPath = path.join(
-      __dirname,
-      "public/previews",
-      previewFilename,
-    );
+
+    // Important: Make sure preview is saved to the public directory
+    const previewDir = path.join(PUBLIC_DIR, "previews");
+    await fs.ensureDir(previewDir);
+
+    const previewPath = path.join(previewDir, previewFilename);
 
     try {
       // Compile LaTeX to PDF
       await compileLatex(template.content, data, previewPath);
 
-      // Return the URL to the preview PDF
+      // Return the URL to the preview PDF - use the public web path
+      const previewUrl = `/previews/${previewFilename}`;
+
+      console.log("Preview URL:", previewUrl);
+
       res.json({
-        previewUrl: `/previews/${previewFilename}`,
+        previewUrl: previewUrl,
       });
     } catch (latexError) {
       console.error("LaTeX compilation error:", latexError);
@@ -947,6 +951,36 @@ app.post("/api/latex/install-start", async (req, res) => {
 // Get the current installation status
 app.get("/api/latex/install-status", (req, res) => {
   res.json(latexInstallStatus);
+});
+
+app.post("/api/latex/test", async (req, res) => {
+  try {
+    const { content } = req.body;
+    const tempOutputPath = path.join(
+      __dirname,
+      "public/previews",
+      `test-${Date.now()}.pdf`,
+    );
+
+    // Minimal test content with just the provided content in document body
+    const testContent = content.includes("\\begin{document}")
+      ? content
+      : `\\documentclass{article}\n\\begin{document}\n${content}\n\\end{document}`;
+
+    await compileLatex(testContent, {}, tempOutputPath);
+
+    res.json({
+      success: true,
+      message: "LaTeX compilation successful",
+      previewUrl: `/previews/${path.basename(tempOutputPath)}`,
+    });
+  } catch (error) {
+    console.error("LaTeX test compilation error:", error);
+    res.status(500).json({
+      error: `LaTeX compilation failed: ${error.message}`,
+      success: false,
+    });
+  }
 });
 
 // Serve SPA routes for client-side navigation

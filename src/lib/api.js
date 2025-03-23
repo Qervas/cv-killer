@@ -1,251 +1,174 @@
-const API_URL = "http://localhost:3001/api";
+import { exec } from "child_process";
+import fs from "fs-extra";
+import path from "path";
+import { fileURLToPath } from "url";
+import latexInstaller from "./latex-installer.js";
 
-// CV Templates
-export async function getTemplates() {
-  const response = await fetch(`${API_URL}/templates`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch templates");
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+async function compileLatex(templateContent, companyData, outputPath) {
+  // Create a temp directory for processing
+  const tempDir = path.join(__dirname, "temp", Date.now().toString());
+  await fs.ensureDir(tempDir);
+
+  try {
+    // Verify we have content to work with
+    if (!templateContent || templateContent.trim() === "") {
+      console.error("Empty template content provided");
+      templateContent = `\\documentclass{article}
+\\begin{document}
+No template content was provided. This is a fallback document.
+\\end{document}`;
+    }
+
+    // Process template replacements
+    console.log("Processing template with data:", Object.keys(companyData));
+    let processedTemplate = templateContent;
+
+    // Replace placeholders with values
+    for (const [key, value] of Object.entries(companyData)) {
+      if (value !== undefined && value !== null) {
+        // Create a safe value for LaTeX
+        const safeValue = String(value)
+          .replace(/\\/g, "\\textbackslash ")
+          .replace(/\{/g, "\\{")
+          .replace(/\}/g, "\\}")
+          .replace(/\$/g, "\\$")
+          .replace(/%/g, "\\%")
+          .replace(/&/g, "\\&")
+          .replace(/#/g, "\\#")
+          .replace(/_/g, "\\_")
+          .replace(/~/g, "\\textasciitilde ")
+          .replace(/\^/g, "\\textasciicircum ");
+
+        // Replace all instances of {key} with the safe value
+        const regex = new RegExp(`\\{${key}\\}`, "g");
+        processedTemplate = processedTemplate.replace(regex, safeValue);
+      }
+    }
+
+    // Replace any remaining placeholders with empty strings
+    processedTemplate = processedTemplate.replace(/\{[a-zA-Z0-9_]+\}/g, "");
+
+    // Create a minimal valid document if the template doesn't have basic structure
+    if (!processedTemplate.includes("\\begin{document}")) {
+      console.warn("Template missing \\begin{document}, creating fallback");
+      processedTemplate = `\\documentclass{article}
+\\begin{document}
+${processedTemplate}
+\\end{document}`;
+    }
+
+    // Write to temp file
+    const texFilePath = path.join(tempDir, "output.tex");
+    await fs.writeFile(texFilePath, processedTemplate);
+    console.log(`Template written to ${texFilePath}`);
+
+    // Choose LaTeX command
+    let pdflatexCmd;
+    try {
+      const systemLatex = await latexInstaller.findSystemLatex();
+      if (systemLatex) {
+        pdflatexCmd = systemLatex;
+        console.log("Using system LaTeX:", pdflatexCmd);
+      } else {
+        // Try to use fallback pdflatex command
+        pdflatexCmd = "pdflatex";
+        console.log("Using default pdflatex command");
+      }
+    } catch (err) {
+      // If detection fails, try simple command
+      pdflatexCmd = "pdflatex";
+      console.log("Using default pdflatex command (after error):", err.message);
+    }
+
+    // DEBUG: Show the content of the tex file we're about to compile
+    const fileContent = await fs.readFile(texFilePath, "utf-8");
+    console.log("-------------- TEX FILE CONTENT --------------");
+    console.log(
+      fileContent.substring(0, 1000) + (fileContent.length > 1000 ? "..." : ""),
+    );
+    console.log("----------------------------------------------");
+
+    // Run pdflatex - Try simplified single pass approach
+    console.log(`Running: ${pdflatexCmd} on ${texFilePath}`);
+    await new Promise((resolve, reject) => {
+      const cmd = `${pdflatexCmd} -interaction=nonstopmode -output-directory="${tempDir}" "${texFilePath}"`;
+      exec(cmd, { maxBuffer: 5 * 1024 * 1024 }, (error, stdout, stderr) => {
+        // Log output regardless of errors
+        console.log("LaTeX stdout:", stdout);
+        if (stderr) console.error("LaTeX stderr:", stderr);
+
+        // Warning: pdflatex often returns non-zero exit code even when PDF is generated
+        if (error) {
+          console.warn("LaTeX process returned error:", error.message);
+          // But we'll continue to check if PDF was generated
+        }
+        resolve();
+      });
+    });
+
+    // Check if PDF was created regardless of process exit code
+    const pdfPath = path.join(tempDir, "output.pdf");
+    const pdfExists = await fs.pathExists(pdfPath);
+
+    console.log(
+      `PDF file ${pdfExists ? "exists" : "does not exist"} at: ${pdfPath}`,
+    );
+
+    if (pdfExists) {
+      // Get file stats to verify it's not empty
+      const stats = await fs.stat(pdfPath);
+      console.log(`PDF file size: ${stats.size} bytes`);
+
+      if (stats.size < 100) {
+        throw new Error("Generated PDF is too small to be valid");
+      }
+
+      // Copy to destination
+      await fs.ensureDir(path.dirname(outputPath));
+      await fs.copyFile(pdfPath, outputPath);
+      return outputPath;
+    } else {
+      // If PDF doesn't exist, check log file for errors
+      const logPath = path.join(tempDir, "output.log");
+      let logContent = "";
+
+      try {
+        if (await fs.pathExists(logPath)) {
+          logContent = await fs.readFile(logPath, "utf-8");
+          console.error(
+            "LaTeX log file content:",
+            logContent.substring(0, 1000) + "...",
+          );
+        }
+      } catch (err) {
+        console.error("Error reading log file:", err);
+      }
+
+      throw new Error(
+        `PDF generation failed. LaTeX error: ${logContent.substring(0, 200)}...`,
+      );
+    }
+  } catch (error) {
+    console.error("LaTeX compilation error:", error);
+    throw error;
   }
-  return response.json();
 }
 
-export async function getTemplate(id) {
-  const response = await fetch(`${API_URL}/templates/${id}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch template");
-  }
-  return response.json();
-}
-
-export async function saveTemplate(template) {
-  const response = await fetch(`${API_URL}/templates`, {
+export async function testLatexCompilation(textContent) {
+  const response = await fetch(`${API_URL}/latex/test`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(template),
+    body: JSON.stringify({ content: textContent }),
   });
 
   if (!response.ok) {
-    throw new Error("Failed to save template");
+    const errorData = await response.json();
+    throw new Error(errorData.error || "Failed to test LaTeX compilation");
   }
   return response.json();
 }
 
-export async function deleteTemplate(id) {
-  const response = await fetch(`${API_URL}/templates/${id}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to delete template");
-  }
-  return true;
-}
-
-// Cover Letter Templates
-export async function getCoverLetterTemplates() {
-  const response = await fetch(`${API_URL}/cover-letter-templates`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch cover letter templates");
-  }
-  return response.json();
-}
-
-export async function getCoverLetterTemplate(id) {
-  const response = await fetch(`${API_URL}/cover-letter-templates/${id}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch cover letter template");
-  }
-  return response.json();
-}
-
-export async function saveCoverLetterTemplate(template) {
-  const response = await fetch(`${API_URL}/cover-letter-templates`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(template),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to save cover letter template");
-  }
-  return response.json();
-}
-
-export async function deleteCoverLetterTemplate(id) {
-  const response = await fetch(`${API_URL}/cover-letter-templates/${id}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to delete cover letter template");
-  }
-  return true;
-}
-
-// Companies
-export async function getCompanies() {
-  const response = await fetch(`${API_URL}/companies`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch companies");
-  }
-  return response.json();
-}
-
-export async function getCompany(id) {
-  const response = await fetch(`${API_URL}/companies/${id}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch company");
-  }
-  return response.json();
-}
-
-export async function saveCompany(company) {
-  const response = await fetch(`${API_URL}/companies`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(company),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to save company");
-  }
-  return response.json();
-}
-
-export async function deleteCompany(id) {
-  const response = await fetch(`${API_URL}/companies/${id}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to delete company");
-  }
-  return true;
-}
-
-// PDF Generation
-export async function generatePreview(
-  templateId,
-  companyId,
-  additionalData = {},
-  type = "cv",
-) {
-  const payload = {
-    templateId,
-    companyId,
-    type,
-    additionalData,
-  };
-
-  const response = await fetch(`${API_URL}/preview`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload),
-  });
-
-  if (!response.ok) {
-    const errorData = await response
-      .json()
-      .catch(() => ({ error: "Failed to generate preview" }));
-    throw new Error(errorData.error || "Failed to generate preview");
-  }
-  return response.json();
-}
-
-export async function buildPDF(templateId, companyId) {
-  const response = await fetch(`${API_URL}/build`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ templateId, companyId, type: "cv" }),
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to build PDF");
-  }
-  return response.json();
-}
-
-export async function buildCoverLetter(
-  templateId,
-  companyId,
-  additionalData = {},
-) {
-  const response = await fetch(`${API_URL}/build`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      templateId,
-      companyId,
-      type: "cover-letter",
-      additionalData,
-    }),
-  });
-
-  if (!response.ok) {
-    const errorData = await response
-      .json()
-      .catch(() => ({ error: "Failed to build cover letter" }));
-    throw new Error(errorData.error || "Failed to build cover letter");
-  }
-  return response.json();
-}
-
-// Applications
-export async function getApplications() {
-  const response = await fetch(`${API_URL}/applications`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch applications");
-  }
-  return response.json();
-}
-
-export async function getApplication(id) {
-  const response = await fetch(`${API_URL}/applications/${id}`);
-  if (!response.ok) {
-    throw new Error("Failed to fetch application");
-  }
-  return response.json();
-}
-
-export async function saveApplication(application) {
-  const response = await fetch(`${API_URL}/applications`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(application),
-  });
-
-  if (!response.ok) {
-    const errorData = await response
-      .json()
-      .catch(() => ({ error: "Failed to save application" }));
-    throw new Error(errorData.error || "Failed to save application");
-  }
-  return response.json();
-}
-
-export async function deleteApplication(id) {
-  const response = await fetch(`${API_URL}/applications/${id}`, {
-    method: "DELETE",
-  });
-
-  if (!response.ok) {
-    throw new Error("Failed to delete application");
-  }
-  return true;
-}
-
-export async function generateApplication(data) {
-  const response = await fetch(`${API_URL}/applications/generate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-
-  if (!response.ok) {
-    const errorData = await response
-      .json()
-      .catch(() => ({ error: "Failed to generate application" }));
-    throw new Error(errorData.error || "Failed to generate application");
-  }
-  return response.json();
-}
+export { compileLatex };

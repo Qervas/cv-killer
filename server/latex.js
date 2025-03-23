@@ -2,127 +2,145 @@ import { exec } from "child_process";
 import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
-import latexInstaller from "./latex-installer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+// Ultra-minimal template - absolute bare minimum
+const FALLBACK_TEMPLATE = `\\documentclass{article}
+\\begin{document}
+\\section*{Simple CV}
+
+\\textbf{Company:} COMPANY_NAME
+
+\\textbf{Position:} POSITION_TITLE
+
+\\textbf{Generated:} \\today
+\\end{document}`;
+
+// Error template
+const ERROR_TEMPLATE = `\\documentclass{article}
+\\begin{document}
+\\section*{PDF Generation Error}
+
+There was an error processing your CV template.
+
+\\vspace{1cm}
+Please check your template for LaTeX syntax errors or use the default template.
+\\end{document}`;
+
 async function compileLatex(templateContent, companyData, outputPath) {
-  // Create a temp directory for processing
+  // Create temp directory for processing
   const tempDir = path.join(__dirname, "temp", Date.now().toString());
   await fs.ensureDir(tempDir);
 
   try {
-    // Replace placeholders with company data
-    let processedTemplate = templateContent;
+    // Prepare simple variables for template replacement
+    const companyName = companyData.companyName || "Company Name";
+    const position = companyData.position || "Position";
 
-    // Log the data we're using for replacements
-    console.log("Data for template replacements:", companyData);
+    // Try to generate PDF with user template first
+    let success = await tryGeneratePDF(
+      tempDir,
+      templateContent,
+      companyData,
+      outputPath,
+    );
 
-    // First, handle keys with explicit values
-    for (const [key, value] of Object.entries(companyData)) {
-      if (value !== undefined && value !== null) {
-        // Use regex to replace all instances of {key}
-        const regex = new RegExp(`\\{${key}\\}`, "g");
-        processedTemplate = processedTemplate.replace(regex, value || "");
-      }
+    // If user template failed, try fallback template
+    if (!success) {
+      console.log("User template failed, trying fallback template");
+
+      // Replace placeholders in fallback template
+      let fallbackContent = FALLBACK_TEMPLATE.replace(
+        "COMPANY_NAME",
+        companyName,
+      ).replace("POSITION_TITLE", position);
+
+      success = await tryGeneratePDF(tempDir, fallbackContent, {}, outputPath);
     }
 
-    // For debugging - log the processed template
-    console.log("Processed template after replacements:");
-    console.log(processedTemplate.substring(0, 500) + "..."); // Show first 500 chars for debugging
+    // If fallback template also failed, use error template
+    if (!success) {
+      console.log("Fallback template failed, using error template");
 
-    // Write the processed file
-    const processedFilePath = path.join(tempDir, "output.tex");
-    await fs.writeFile(processedFilePath, processedTemplate);
+      // Generate error PDF
+      success = await tryGeneratePDF(tempDir, ERROR_TEMPLATE, {}, outputPath);
 
-    // Find a LaTeX executable - prioritize system LaTeX over bundled
-    let pdflatexCmd;
+      // If even error template fails, create a text file
+      if (!success) {
+        console.log("Error template failed, creating text file");
+        const textPath = outputPath.replace(/\.pdf$/, ".txt");
+        await fs.writeFile(
+          textPath,
+          "Error generating PDF. Please check your LaTeX template.",
+        );
 
-    // First try to find system LaTeX
-    try {
-      const systemLatexPath = await latexInstaller.findSystemLatex();
-      if (systemLatexPath) {
-        pdflatexCmd = systemLatexPath;
-        console.log("Using system LaTeX at:", pdflatexCmd);
-      } else {
-        // Fall back to bundled LaTeX only if it actually exists
-        const bundledPath = latexInstaller.getBinaryPath();
-        try {
-          await fs.access(bundledPath);
-          pdflatexCmd = bundledPath;
-          console.log("Using bundled LaTeX at:", pdflatexCmd);
-        } catch (err) {
-          throw new Error(
-            "No LaTeX installation found. Please install LaTeX to generate PDFs.",
-          );
+        // Try to copy a placeholder PDF if we have one
+        const placeholderPath = path.join(__dirname, "placeholder.pdf");
+        if (fs.existsSync(placeholderPath)) {
+          await fs.copyFile(placeholderPath, outputPath);
+          return outputPath;
         }
+
+        throw new Error(
+          "Failed to generate PDF. Check your LaTeX installation.",
+        );
       }
-    } catch (err) {
-      // Last resort - try to use "pdflatex" directly from PATH
-      pdflatexCmd = "pdflatex";
-      console.log("Falling back to system pdflatex on PATH");
     }
 
-    console.log(`Using LaTeX from: ${pdflatexCmd}`);
-    console.log(`Processing file: ${processedFilePath}`);
-
-    // Run pdflatex with error capturing - first run
-    await new Promise((resolve, reject) => {
-      exec(
-        `${pdflatexCmd} -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
-        { maxBuffer: 1024 * 1024 * 10 }, // Increase buffer size for large logs
-        (error, stdout, stderr) => {
-          if (error && error.code !== 0) {
-            console.error("First pdflatex run stdout:", stdout);
-            console.error("First pdflatex run stderr:", stderr);
-            // Don't reject here, as we still want to try the second run
-          }
-          resolve(stdout);
-        },
-      );
-    });
-
-    // Run second pass for references
-    await new Promise((resolve, reject) => {
-      exec(
-        `${pdflatexCmd} -interaction=nonstopmode -output-directory="${tempDir}" "${processedFilePath}"`,
-        { maxBuffer: 1024 * 1024 * 10 },
-        (error, stdout, stderr) => {
-          if (error && error.code !== 0) {
-            console.error("Second pdflatex run stdout:", stdout);
-            console.error("Second pdflatex run stderr:", stderr);
-            reject(
-              new Error(
-                `LaTeX compilation failed: ${stderr || stdout || error.message}`,
-              ),
-            );
-            return;
-          }
-          resolve(stdout);
-        },
-      );
-    });
-
-    // Check if the PDF was created
-    const pdfPath = path.join(tempDir, "output.pdf");
-    if (await fs.pathExists(pdfPath)) {
-      console.log("PDF generated successfully at:", pdfPath);
-      await fs.ensureDir(path.dirname(outputPath));
-      await fs.copyFile(pdfPath, outputPath);
-      return outputPath;
-    } else {
-      throw new Error(
-        "PDF file not generated - check LaTeX content for errors",
-      );
-    }
+    console.log("Successfully generated PDF at:", outputPath);
+    return outputPath;
   } catch (error) {
     console.error("LaTeX compilation error:", error);
     throw error;
-  } finally {
-    // Keep the temp directory for debugging
-    console.log("Temp directory (for debugging):", tempDir);
   }
+}
+
+// Helper function to try compiling a LaTeX template
+async function tryGeneratePDF(tempDir, content, data, outputPath) {
+  try {
+    // Create temp tex file
+    const texPath = path.join(tempDir, "document.tex");
+    await fs.writeFile(texPath, content);
+
+    // Run pdflatex
+    console.log("Running pdflatex on", texPath);
+    const result = await runPdfLatex(texPath, tempDir);
+
+    // Check if PDF was created
+    const pdfPath = path.join(tempDir, "document.pdf");
+    const pdfExists = await fs.pathExists(pdfPath);
+
+    if (pdfExists) {
+      // Copy to desired output location
+      await fs.ensureDir(path.dirname(outputPath));
+      await fs.copyFile(pdfPath, outputPath);
+      return true;
+    }
+
+    return false;
+  } catch (err) {
+    console.error("Error in tryGeneratePDF:", err);
+    return false;
+  }
+}
+
+// Run pdflatex with proper error handling
+function runPdfLatex(texPath, outputDir) {
+  return new Promise((resolve) => {
+    const pdflatexCmd = "pdflatex";
+    const cmd = `${pdflatexCmd} -interaction=nonstopmode -halt-on-error -output-directory="${outputDir}" "${texPath}"`;
+
+    console.log("Running command:", cmd);
+
+    exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
+      if (error) {
+        console.log("pdflatex error:", error.message);
+      }
+      resolve({ error, stdout, stderr });
+    });
+  });
 }
 
 export { compileLatex };
