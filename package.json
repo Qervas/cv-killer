@@ -17,7 +17,9 @@
     "postbuild": "node scripts/copy-server.js",
     "preview": "vite preview",
     "electron": "electron .",
-    "build-electron": "vite build && electron-builder"
+    "preelectron-build": "node scripts/generate-cjs-server.js",
+    "build-electron": "npm run preelectron-build && vite build && node scripts/copy-server.js && electron-builder",
+    "build-electron-debug": "npm run preelectron-build && cross-env DEBUG=true vite build && node scripts/copy-server.js && electron-builder"
   },
   "build": {
     "appId": "com.yourdomain.cvkiller",
@@ -25,28 +27,36 @@
     "files": [
       "build/**/*",
       "electron.cjs",
-      "server-bridge.cjs"
+      "preload.js"
     ],
     "extraResources": [
       {
-        "from": "server",
-        "to": "app/server"
+        "from": "server/server-minimal.cjs",
+        "to": "app/server/server-minimal.cjs"
       },
       {
-        "from": "server-bridge.cjs",
-        "to": "app/server-bridge.cjs"
+        "from": "server/server-minimal.js",
+        "to": "app/server/server-minimal.js"
+      },
+      {
+        "from": "server",
+        "to": "app/server",
+        "filter": [
+          "**/*",
+          "!node_modules/**/*"
+        ]
       }
     ],
     "extraFiles": [
       {
         "from": "node_modules",
-        "to": "node_modules",
+        "to": "app/node_modules",
         "filter": [
           "express/**/*",
           "cors/**/*",
           "fs-extra/**/*",
           "uuid/**/*",
-          "@types/**/*",
+          "object-assign/**/*",
           "body-parser/**/*",
           "path-to-regexp/**/*",
           "accepts/**/*",
@@ -100,13 +110,15 @@
           "type-is/**/*",
           "unpipe/**/*",
           "utils-merge/**/*",
-          "vary/**/*"
+          "vary/**/*",
+          "url/**/*"
         ]
       }
     ],
     "asar": true,
     "asarUnpack": [
-      "node_modules/**/*"
+      "app/node_modules/**/*",
+      "app/server/**/*"
     ],
     "directories": {
       "buildResources": "resources",
@@ -137,6 +149,7 @@
     "@sveltejs/kit": "^2.20.2",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
     "electron": "^35.0.3",
     "electron-builder": "^25.1.8",
     "nodemon": "^3.1.9",
