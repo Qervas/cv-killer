@@ -7,26 +7,72 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 // Ultra-minimal template - absolute bare minimum
-const FALLBACK_TEMPLATE = `\\documentclass{article}
+const FALLBACK_TEMPLATE = `\\documentclass[11pt,a4paper]{article}
+\\usepackage[utf8]{inputenc}
+\\usepackage[margin=1in]{geometry}
+\\usepackage{xcolor}
+\\usepackage{titlesec}
+
+% Custom colors
+\\definecolor{primary}{RGB}{0, 90, 160}
+\\definecolor{secondary}{RGB}{100, 100, 100}
+
+% Remove page numbers
+\\pagenumbering{gobble}
+
 \\begin{document}
-\\section*{Simple CV}
 
-\\textbf{Company:} COMPANY_NAME
+\\begin{center}
+{\\Huge\\bfseries\\color{primary} CV for \\MakeUppercase{\\textsc{\\textbf{\\color{primary}{companyName}}}}}
+\\\\[0.5em]
+{\\Large\\color{secondary} {position}}
+\\\\[0.3em]
+{\\normalsize\\color{secondary}{location}}
+\\end{center}
 
-\\textbf{Position:} POSITION_TITLE
+\\vspace{1em}
 
-\\textbf{Generated:} \\today
+\\section*{Experience}
+\\begin{itemize}
+\\item {\\textbf{\\color{primary}{companyName}}} -- {position}
+\\end{itemize}
+
+\\vfill
+\\begin{center}
+\\textit{Generated: \\today}
+\\end{center}
+
 \\end{document}`;
 
 // Error template
-const ERROR_TEMPLATE = `\\documentclass{article}
+const ERROR_TEMPLATE = `\\documentclass[11pt,a4paper]{article}
+\\usepackage[utf8]{inputenc}
+\\usepackage[margin=1in]{geometry}
+\\usepackage{xcolor}
+\\usepackage{titlesec}
+
+% Custom colors
+\\definecolor{primary}{RGB}{0, 90, 160}
+\\definecolor{secondary}{RGB}{100, 100, 100}
+
+% Remove page numbers
+\\pagenumbering{gobble}
+
 \\begin{document}
-\\section*{PDF Generation Error}
 
-There was an error processing your CV template.
+\\begin{center}
+{\\Huge\\bfseries\\color{primary} Template Error}
+\\\\[1cm]
+{\\large\\color{secondary} There was an error processing your CV template.}
+\\\\[0.5cm]
+{\\normalsize Please check your template for LaTeX syntax errors or try a different template.}
+\\end{center}
 
-\\vspace{1cm}
-Please check your template for LaTeX syntax errors or use the default template.
+\\vfill
+\\begin{center}
+\\textit{Generated: \\today}
+\\end{center}
+
 \\end{document}`;
 
 async function compileLatex(templateContent, companyData, outputPath) {
@@ -35,57 +81,22 @@ async function compileLatex(templateContent, companyData, outputPath) {
   await fs.ensureDir(tempDir);
 
   try {
-    // Prepare simple variables for template replacement
-    const companyName = companyData.companyName || "Company Name";
-    const position = companyData.position || "Position";
-
     // Try to generate PDF with user template first
-    let success = await tryGeneratePDF(
-      tempDir,
-      templateContent,
-      companyData,
-      outputPath,
-    );
+    let success = await tryGeneratePDF(tempDir, templateContent, companyData, outputPath);
 
     // If user template failed, try fallback template
     if (!success) {
       console.log("User template failed, trying fallback template");
-
-      // Replace placeholders in fallback template
-      let fallbackContent = FALLBACK_TEMPLATE.replace(
-        "COMPANY_NAME",
-        companyName,
-      ).replace("POSITION_TITLE", position);
-
-      success = await tryGeneratePDF(tempDir, fallbackContent, {}, outputPath);
+      success = await tryGeneratePDF(tempDir, FALLBACK_TEMPLATE, companyData, outputPath);
     }
 
     // If fallback template also failed, use error template
     if (!success) {
       console.log("Fallback template failed, using error template");
-
-      // Generate error PDF
       success = await tryGeneratePDF(tempDir, ERROR_TEMPLATE, {}, outputPath);
 
-      // If even error template fails, create a text file
       if (!success) {
-        console.log("Error template failed, creating text file");
-        const textPath = outputPath.replace(/\.pdf$/, ".txt");
-        await fs.writeFile(
-          textPath,
-          "Error generating PDF. Please check your LaTeX template.",
-        );
-
-        // Try to copy a placeholder PDF if we have one
-        const placeholderPath = path.join(__dirname, "placeholder.pdf");
-        if (fs.existsSync(placeholderPath)) {
-          await fs.copyFile(placeholderPath, outputPath);
-          return outputPath;
-        }
-
-        throw new Error(
-          "Failed to generate PDF. Check your LaTeX installation.",
-        );
+        throw new Error("Failed to generate PDF. Check your LaTeX installation.");
       }
     }
 
@@ -94,6 +105,13 @@ async function compileLatex(templateContent, companyData, outputPath) {
   } catch (error) {
     console.error("LaTeX compilation error:", error);
     throw error;
+  } finally {
+    // Clean up temp directory
+    try {
+      await fs.remove(tempDir);
+    } catch (err) {
+      console.error("Error cleaning up temp directory:", err);
+    }
   }
 }
 

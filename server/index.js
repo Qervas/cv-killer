@@ -119,7 +119,6 @@ app.use(
 app.use(express.json());
 app.use("/public", express.static(path.join(__dirname, "public")));
 app.use("/build", express.static(path.join(__dirname, "../build")));
-app.use("/previews", express.static(path.join(__dirname, "public/previews")));
 app.use(express.static(path.join(__dirname, "../build")));
 
 // Also serve from user data path in Electron environment
@@ -131,10 +130,6 @@ if (process.env.ELECTRON_RUN === "true" && process.env.USER_DATA_PATH) {
   app.use(
     "/public",
     express.static(path.join(process.env.USER_DATA_PATH, "public")),
-  );
-  app.use(
-    "/previews",
-    express.static(path.join(process.env.USER_DATA_PATH, "public/previews")),
   );
 }
 
