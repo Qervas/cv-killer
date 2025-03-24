@@ -353,14 +353,8 @@ async function initializeServer() {
     };
 
     console.log("Starting server with environment:", serverEnv);
-    if (enableDebug) {
-      sendToDebugWindow(
-        `Starting server with env: ${JSON.stringify(serverEnv)}`,
-        "info",
-      );
-    }
 
-    // Direct execution - no fancy starter needed for CJS
+    // For dev environment, use spawn directly
     const childProcess = spawn("node", [serverPath], {
       env: serverEnv,
       stdio: ["pipe", "pipe", "pipe"],
@@ -733,12 +727,22 @@ async function createWindow() {
 async function checkServerAvailability(url) {
   return new Promise((resolve) => {
     try {
-      console.log(`Checking server availability at ${url}...`);
+      console.log(`Checking server availability at ${url}/api/health...`);
 
       const http = require("http");
-      const testRequest = http.get(url, (res) => {
+      const testRequest = http.get(`${url}/api/health`, (res) => {
         console.log(`Server responded with status: ${res.statusCode}`);
-        resolve(res.statusCode === 200);
+
+        // Read the response body
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+        });
+
+        res.on("end", () => {
+          console.log("Response data:", data);
+          resolve(res.statusCode === 200);
+        });
       });
 
       testRequest.on("error", (err) => {

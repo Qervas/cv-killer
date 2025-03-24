@@ -16,10 +16,12 @@
     "build": "vite build",
     "postbuild": "node scripts/copy-server.js",
     "preview": "vite preview",
-    "electron": "electron .",
+    "electron": "npm run build && electron .",
     "preelectron-build": "node scripts/generate-cjs-server.js",
     "build-electron": "npm run preelectron-build && vite build && node scripts/copy-server.js && electron-builder",
-    "build-electron-debug": "npm run preelectron-build && cross-env DEBUG=true vite build && node scripts/copy-server.js && electron-builder"
+    "build-electron-debug": "npm run preelectron-build && cross-env DEBUG=true vite build && node scripts/copy-server.js && electron-builder",
+    "reset-data": "node scripts/reset-app-data.js",
+    "electron-clean": "npm run reset-data && npm run electron"
   },
   "build": {
     "appId": "com.yourdomain.cvkiller",
