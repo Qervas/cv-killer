@@ -2,78 +2,84 @@ import { exec } from "child_process";
 import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
+import { getBinaryPath } from "./latex-installer.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Ultra-minimal template - absolute bare minimum
+// Ultra-minimal template without special fonts or packages
 const FALLBACK_TEMPLATE = `\\documentclass[11pt,a4paper]{article}
 \\usepackage[utf8]{inputenc}
 \\usepackage[margin=1in]{geometry}
-\\usepackage{xcolor}
-\\usepackage{titlesec}
 
-% Custom colors
-\\definecolor{primary}{RGB}{0, 90, 160}
-\\definecolor{secondary}{RGB}{100, 100, 100}
-
-% Remove page numbers
-\\pagenumbering{gobble}
+% Avoid using any special fonts or packages that might not be included in TinyTeX
 
 \\begin{document}
 
 \\begin{center}
-{\\Huge\\bfseries\\color{primary} CV for \\MakeUppercase{\\textsc{\\textbf{\\color{primary}{companyName}}}}}
-\\\\[0.5em]
-{\\Large\\color{secondary} {position}}
-\\\\[0.3em]
-{\\normalsize\\color{secondary}{location}}
+{\\large\\bfseries CV for [[companyName]]}
 \\end{center}
-
-\\vspace{1em}
 
 \\section*{Experience}
-\\begin{itemize}
-\\item {\\textbf{\\color{primary}{companyName}}} -- {position}
-\\end{itemize}
+Position: [[position]]
+
+Location: [[location]]
 
 \\vfill
 \\begin{center}
-\\textit{Generated: \\today}
+Generated: \\today
 \\end{center}
 
 \\end{document}`;
 
-// Error template
+// Ultra minimal error template
 const ERROR_TEMPLATE = `\\documentclass[11pt,a4paper]{article}
 \\usepackage[utf8]{inputenc}
-\\usepackage[margin=1in]{geometry}
-\\usepackage{xcolor}
-\\usepackage{titlesec}
-
-% Custom colors
-\\definecolor{primary}{RGB}{0, 90, 160}
-\\definecolor{secondary}{RGB}{100, 100, 100}
-
-% Remove page numbers
-\\pagenumbering{gobble}
 
 \\begin{document}
 
 \\begin{center}
-{\\Huge\\bfseries\\color{primary} Template Error}
-\\\\[1cm]
-{\\large\\color{secondary} There was an error processing your CV template.}
-\\\\[0.5cm]
-{\\normalsize Please check your template for LaTeX syntax errors or try a different template.}
+{\\large Template Error}
 \\end{center}
 
-\\vfill
-\\begin{center}
-\\textit{Generated: \\today}
-\\end{center}
+\\vspace{1cm}
+There was an error processing your template.
+Please check for LaTeX syntax errors or try a different template.
 
 \\end{document}`;
+
+// Function to install missing LaTeX packages
+async function installMissingPackage(packageName) {
+  try {
+    console.log(`Installing missing LaTeX package: ${packageName}`);
+    const tlmgrPath = getBinaryPath().replace('pdflatex', 'tlmgr');
+
+    if (!fs.existsSync(tlmgrPath)) {
+      console.error("tlmgr not found at:", tlmgrPath);
+      return false;
+    }
+
+    // Run tlmgr to install the package
+    const cmd = `${tlmgrPath} install ${packageName}`;
+    console.log("Running command:", cmd);
+
+    return new Promise((resolve) => {
+      exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error("Package installation failed:", error);
+          console.log(stdout);
+          resolve(false);
+        } else {
+          console.log("Package installation succeeded:", stdout);
+          resolve(true);
+        }
+      });
+    });
+  } catch (err) {
+    console.error("Error installing package:", err);
+    return false;
+  }
+}
 
 async function compileLatex(templateContent, companyData, outputPath) {
   // Create temp directory for processing
@@ -81,19 +87,41 @@ async function compileLatex(templateContent, companyData, outputPath) {
   await fs.ensureDir(tempDir);
 
   try {
-    // Try to generate PDF with user template first
-    let success = await tryGeneratePDF(tempDir, templateContent, companyData, outputPath);
+    console.log("Starting LaTeX compilation process");
+    console.log("Company data:", JSON.stringify(companyData));
+    console.log("Output path:", outputPath);
 
-    // If user template failed, try fallback template
+    // Process template with advanced variable replacement
+    const processedTemplate = preprocessTemplate(templateContent, companyData);
+
+    // Write the processed template for inspection (debugging)
+    const debugTemplateFile = path.join(tempDir, "processed_template.tex");
+    await fs.writeFile(debugTemplateFile, processedTemplate);
+    console.log("Processed template written to:", debugTemplateFile);
+
+    // Try to generate PDF with user template first
+    let success = await tryGeneratePDF(tempDir, processedTemplate, outputPath);
+
+    // If failed, try to install cm-super package which contains many common fonts
+    if (!success) {
+      console.log("First attempt failed - trying to install required packages");
+      await installMissingPackage("cm-super");
+
+      // Try again after installing packages
+      success = await tryGeneratePDF(tempDir, processedTemplate, outputPath);
+    }
+
+    // If user template still failed, try fallback template
     if (!success) {
       console.log("User template failed, trying fallback template");
-      success = await tryGeneratePDF(tempDir, FALLBACK_TEMPLATE, companyData, outputPath);
+      const processedFallback = preprocessTemplate(FALLBACK_TEMPLATE, companyData);
+      success = await tryGeneratePDF(tempDir, processedFallback, outputPath);
     }
 
     // If fallback template also failed, use error template
     if (!success) {
       console.log("Fallback template failed, using error template");
-      success = await tryGeneratePDF(tempDir, ERROR_TEMPLATE, {}, outputPath);
+      success = await tryGeneratePDF(tempDir, ERROR_TEMPLATE, outputPath);
 
       if (!success) {
         throw new Error("Failed to generate PDF. Check your LaTeX installation.");
@@ -106,29 +134,101 @@ async function compileLatex(templateContent, companyData, outputPath) {
     console.error("LaTeX compilation error:", error);
     throw error;
   } finally {
-    // Clean up temp directory
-    try {
-      await fs.remove(tempDir);
-    } catch (err) {
-      console.error("Error cleaning up temp directory:", err);
-    }
+    // Keep temp directory for debugging
+    console.log("Temporary files are saved in:", tempDir);
   }
 }
 
+/**
+ * Advanced LaTeX template preprocessor
+ */
+function preprocessTemplate(template, data) {
+  if (!template || !data) {
+    return template || "";
+  }
+
+  // Make a copy of the template to process
+  let result = template;
+
+  // Log the variables available and their types
+  console.log("Preprocessing variables:", Object.keys(data).map(key =>
+    `${key} (${typeof data[key]})`).join(", "));
+
+  // Replace variables using different patterns
+  Object.entries(data).forEach(([key, value]) => {
+    if (value === null || value === undefined) {
+      return; // Skip null/undefined values
+    }
+
+    // Convert value to string and escape LaTeX special characters
+    const safeValue = escapeLatex(value.toString());
+
+    // Replace patterns:
+    // 1. Direct word replacement (only for safe variable names)
+    if (/^[a-zA-Z0-9]+$/.test(key)) {
+      // Only replace as whole words to prevent partial replacements
+      const wordRegex = new RegExp(`\\b${key}\\b`, 'g');
+      result = result.replace(wordRegex, safeValue);
+    }
+
+    // 2. Standard placeholders with variations
+    const patterns = [
+      `{${key}}`,     // {companyName}
+      `{{${key}}}`,   // {{companyName}}
+      `\\{${key}\\}`, // \{companyName\}
+      `[[${key}]]`,   // [[companyName]]
+    ];
+
+    patterns.forEach(pattern => {
+      result = result.replace(new RegExp(escapeRegExp(pattern), 'g'), safeValue);
+    });
+  });
+
+  return result;
+}
+
+// Helper function to escape LaTeX special characters
+function escapeLatex(text) {
+  return text
+    .replace(/\\/g, '\\textbackslash{}')
+    .replace(/&/g, '\\&')
+    .replace(/%/g, '\\%')
+    .replace(/\$/g, '\\$')
+    .replace(/#/g, '\\#')
+    .replace(/_/g, '\\_')
+    .replace(/\{/g, '\\{')
+    .replace(/\}/g, '\\}')
+    .replace(/~/g, '\\textasciitilde{}')
+    .replace(/\^/g, '\\textasciicircum{}');
+}
+
+// Helper function to escape regex special characters
+function escapeRegExp(string) {
+  return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 // Helper function to try compiling a LaTeX template
-async function tryGeneratePDF(tempDir, content, data, outputPath) {
+async function tryGeneratePDF(tempDir, content, outputPath) {
   try {
     // Create temp tex file
     const texPath = path.join(tempDir, "document.tex");
     await fs.writeFile(texPath, content);
 
-    // Run pdflatex
-    console.log("Running pdflatex on", texPath);
-    const result = await runPdfLatex(texPath, tempDir);
+    // Run pdflatex twice to resolve references
+    console.log("Running pdflatex (1st pass) on", texPath);
+    const result1 = await runPdfLatex(texPath, tempDir);
+
+    // Only run second pass if first was successful
+    if (!result1.error) {
+      console.log("Running pdflatex (2nd pass) on", texPath);
+      await runPdfLatex(texPath, tempDir);
+    }
 
     // Check if PDF was created
     const pdfPath = path.join(tempDir, "document.pdf");
     const pdfExists = await fs.pathExists(pdfPath);
+
+    console.log("PDF exists:", pdfExists);
 
     if (pdfExists) {
       // Copy to desired output location
@@ -147,15 +247,42 @@ async function tryGeneratePDF(tempDir, content, data, outputPath) {
 // Run pdflatex with proper error handling
 function runPdfLatex(texPath, outputDir) {
   return new Promise((resolve) => {
-    const pdflatexCmd = "pdflatex";
-    const cmd = `${pdflatexCmd} -interaction=nonstopmode -halt-on-error -output-directory="${outputDir}" "${texPath}"`;
+    // Get the path to our installed pdflatex binary
+    const pdflatexPath = getBinaryPath();
 
-    console.log("Running command:", cmd);
+    console.log("pdflatex path:", pdflatexPath);
+
+    // Use the installed pdflatex binary with absolute path
+    const pdflatexCmd = fs.existsSync(pdflatexPath)
+      ? pdflatexPath
+      : "pdflatex";
+
+    // Create the command with proper escaping for spaces in paths
+    const cmd = `${pdflatexCmd} -interaction=nonstopmode -output-directory="${outputDir}" "${texPath}"`;
+
+    console.log("Running LaTeX command:", cmd);
 
     exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
-        console.log("pdflatex error:", error.message);
+        console.log("pdflatex execution error:", error.message);
+
+        // Look for missing font errors
+        if (stdout && stdout.includes("Font") && stdout.includes("not found")) {
+          console.log("Font missing error detected");
+
+          // Extract missing package information
+          const fontMatch = stdout.match(/Font (.*?) at/);
+          if (fontMatch) {
+            console.log("Missing font:", fontMatch[1]);
+          }
+        }
       }
+
+      // Check for successful compilation
+      if (stdout && stdout.includes("Output written on")) {
+        console.log("LaTeX success:", stdout.match(/Output written on.*?(\d+) pages?/)[0]);
+      }
+
       resolve({ error, stdout, stderr });
     });
   });
