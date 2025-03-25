@@ -80,14 +80,14 @@ const getTinyTexURL = async () => {
 // Get the binary path
 export function getBinaryPath() {
   if (isWindows) {
-    return path.join(INSTALL_DIR, ".TinyTeX", "bin", "windows", "pdflatex.exe");
+    return path.join(INSTALL_DIR, "TinyTeX", "bin", "windows", "pdflatex.exe");
   } else if (isMac) {
-    return path.join(INSTALL_DIR, ".TinyTeX", "bin", "universal-darwin", "pdflatex");
+    return path.join(INSTALL_DIR, "TinyTeX", "bin", "universal-darwin", "pdflatex");
   } else {
     // Linux - check both x86_64 and aarch64 paths
     const possiblePaths = [
-      path.join(INSTALL_DIR, ".TinyTeX", "bin", "x86_64-linux", "pdflatex"),
-      path.join(INSTALL_DIR, ".TinyTeX", "bin", "aarch64-linux", "pdflatex")
+      path.join(INSTALL_DIR, "TinyTeX", "bin", "x86_64-linux", "pdflatex"),
+      path.join(INSTALL_DIR, "TinyTeX", "bin", "aarch64-linux", "pdflatex")
     ];
 
     for (const binPath of possiblePaths) {

@@ -251,10 +251,11 @@ function runPdfLatex(texPath, outputDir) {
     const pdflatexPath = getBinaryPath();
 
     console.log("pdflatex path:", pdflatexPath);
+    console.log("Checking if pdflatex exists:", fs.existsSync(pdflatexPath));
 
     // Use the installed pdflatex binary with absolute path
     const pdflatexCmd = fs.existsSync(pdflatexPath)
-      ? pdflatexPath
+      ? `"${pdflatexPath}"`  // Quote the path to handle spaces
       : "pdflatex";
 
     // Create the command with proper escaping for spaces in paths
@@ -265,6 +266,8 @@ function runPdfLatex(texPath, outputDir) {
     exec(cmd, { timeout: 30000 }, (error, stdout, stderr) => {
       if (error) {
         console.log("pdflatex execution error:", error.message);
+        console.log("pdflatex stdout:", stdout);
+        console.log("pdflatex stderr:", stderr);
 
         // Look for missing font errors
         if (stdout && stdout.includes("Font") && stdout.includes("not found")) {
