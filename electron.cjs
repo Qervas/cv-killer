@@ -291,7 +291,116 @@ function getNodePath() {
   return nodePath;
 }
 
-// Initialize the server
+// Add cleanup function at the top level
+async function cleanupApplication() {
+  console.log('Cleaning up application resources...');
+
+  // Kill server process if it exists
+  if (serverProcess) {
+    try {
+      const isRunning = serverProcess.pid && !serverProcess.killed;
+      if (isRunning) {
+        console.log(`Killing server process (PID: ${serverProcess.pid})`);
+        serverProcess.kill('SIGTERM');
+        // Give it a moment to shut down gracefully
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
+        // Force kill if still running
+        if (!serverProcess.killed) {
+          serverProcess.kill('SIGKILL');
+        }
+      }
+    } catch (err) {
+      console.error('Error killing server process:', err);
+    }
+    serverProcess = null;
+  }
+
+  // Clean up any remaining processes on our ports
+  try {
+    await cleanupPorts(3001, 3010);
+  } catch (err) {
+    console.error('Error cleaning up ports:', err);
+  }
+
+  // Clean up temp directories
+  try {
+    const tempDirs = [
+      path.join(userDataPath, 'public', 'previews'),
+      path.join(userDataPath, 'temp')
+    ];
+
+    for (const dir of tempDirs) {
+      if (fs.existsSync(dir)) {
+        fs.rmSync(dir, { recursive: true, force: true });
+        console.log(`Cleaned up directory: ${dir}`);
+      }
+    }
+  } catch (err) {
+    console.error('Error cleaning temp directories:', err);
+  }
+}
+
+// Modify the app quit handler
+app.on("window-all-closed", async function () {
+  console.log('All windows closed, cleaning up...');
+  
+  // Run cleanup
+  await cleanupApplication();
+
+  // Quit the app if not on macOS
+  if (process.platform !== "darwin") {
+    app.quit();
+  }
+});
+
+// Add handlers for other termination scenarios
+app.on('before-quit', async (event) => {
+  console.log('Application is about to quit...');
+  event.preventDefault(); // Prevent immediate quit
+  await cleanupApplication();
+  app.exit(); // Force exit after cleanup
+});
+
+// Handle process signals
+['SIGINT', 'SIGTERM', 'SIGQUIT'].forEach(signal => {
+  process.on(signal, async () => {
+    console.log(`Received ${signal}, cleaning up...`);
+    await cleanupApplication();
+    process.exit(0);
+  });
+});
+
+// Add error handler for server process
+function setupServerProcessHandlers(serverProcess) {
+  if (!serverProcess) return;
+
+  serverProcess.on('error', (err) => {
+    console.error('Server process error:', err);
+  });
+
+  serverProcess.on('exit', (code, signal) => {
+    console.log(`Server process exited with code ${code} and signal ${signal}`);
+    serverProcess = null;
+  });
+
+  // Handle server process stdout/stderr
+  serverProcess.stdout?.on('data', (data) => {
+    console.log(`Server: ${data}`);
+    if (enableDebug) {
+      sendToDebugWindow(data.toString(), 'info');
+    }
+  });
+
+  serverProcess.stderr?.on('data', (data) => {
+    console.error(`Server error: ${data}`);
+    if (enableDebug) {
+      sendToDebugWindow(data.toString(), 'error');
+    }
+  });
+}
+
+// Modify initializeServer to use the new handler
 async function initializeServer() {
   try {
     if (enableDebug && !debugWindow) {
@@ -451,8 +560,12 @@ function startFallbackServer(serverPath) {
     ELECTRON_RUN: "true",
     USER_DATA_PATH: userDataPath,
     SERVER_PATH: serverPath,
-    NODE_ENV: "production",
+    NODE_ENV: isDev ? "development" : "production",
     PORT: "3001",
+    DEBUG: enableDebug ? "true" : "false",
+    NODE_PATH: isDev
+      ? path.join(__dirname, "node_modules")
+      : path.join(process.resourcesPath, "app", "node_modules"),
   };
 
   const childProcess = spawn(
@@ -461,44 +574,75 @@ function startFallbackServer(serverPath) {
     {
       env: serverEnv,
       stdio: ["pipe", "pipe", "pipe"],
+      cwd: isDev ? __dirname : path.join(process.resourcesPath, "app"),
+      shell: true,
     },
   );
 
   // Similar promise-based logic as in initializeServer
   return new Promise((resolve, reject) => {
-    // Processing stdout to find port, handling errors, etc.
-    // (Essentially the same as in initializeServer)
-    // ...
-
-    let serverPort = 3001;
-    let serverStarted = false;
+    let output = "";
+    let errorOutput = "";
 
     childProcess.stdout.on("data", (data) => {
-      const output = data.toString();
-      console.log(`Fallback server: ${output}`);
+      const chunk = data.toString();
+      output += chunk;
+      console.log(`Server: ${chunk}`);
 
       if (enableDebug) {
-        sendToDebugWindow(`Fallback: ${output}`, "info");
+        sendToDebugWindow(chunk, "info");
       }
 
-      // Look for port in output
-      const portMatch = output.match(
-        /Server running on http:\/\/localhost:(\d+)/,
-      );
-      if (portMatch && portMatch[1]) {
-        serverPort = parseInt(portMatch[1], 10);
+      // Look for startup confirmation
+      if (chunk.includes("Server running on http://localhost:")) {
         serverStarted = true;
+        const portMatch = chunk.match(/localhost:(\d+)/);
+        if (portMatch) {
+          serverPort = parseInt(portMatch[1], 10);
+        }
         resolve({ port: serverPort, process: childProcess });
       }
     });
 
-    // Handle errors and timeouts (similar to initializeServer)
-    // ...
+    childProcess.stderr.on("data", (data) => {
+      const chunk = data.toString();
+      errorOutput += chunk;
+      console.error(`Server error: ${chunk}`);
 
-    // Handle timeout
+      if (enableDebug) {
+        sendToDebugWindow(chunk, "error");
+      }
+    });
+
+    childProcess.on("error", (err) => {
+      console.error(`Failed to start server: ${err}`);
+      if (enableDebug) {
+        sendToDebugWindow(`Server process error: ${err.message}`, "error");
+      }
+      reject(err);
+    });
+
+    childProcess.on("exit", (code) => {
+      // Only reject if server hasn't started successfully
+      if (!serverStarted) {
+        const message = `Server process exited with code ${code}\nOutput: ${output}\nErrors: ${errorOutput}`;
+        console.error(message);
+        if (enableDebug) {
+          sendToDebugWindow(message, "error");
+        }
+        reject(new Error(message));
+      }
+    });
+
+    // Increase timeout and add more debug info
     setTimeout(() => {
       if (!serverStarted) {
-        console.log("Fallback server startup timeout - assuming it started");
+        const timeoutMessage = `Server startup timeout after 10s\nOutput: ${output}\nErrors: ${errorOutput}`;
+        console.warn(timeoutMessage);
+        if (enableDebug) {
+          sendToDebugWindow(timeoutMessage, "warning");
+        }
+        // Still resolve to try to continue
         resolve({ port: serverPort, process: childProcess });
       }
     }, 10000);
@@ -714,6 +858,9 @@ async function createWindow() {
     if (isDev || forceDevTools) {
       mainWindow.webContents.openDevTools();
     }
+
+    // After starting the server process, add:
+    setupServerProcessHandlers(serverProcess);
   } catch (err) {
     console.error("Error during app initialization:", err);
     dialog.showMessageBox({
@@ -790,23 +937,6 @@ async function checkServerWithRetry(url, maxRetries = 3, retryDelay = 1000) {
 
 // App lifecycle events
 app.whenReady().then(createWindow);
-
-app.on("window-all-closed", function () {
-  if (process.platform !== "darwin") {
-    app.quit();
-  }
-
-  // Kill the server process when closing the app
-  if (serverProcess) {
-    console.log("Killing server process...");
-    try {
-      serverProcess.kill();
-    } catch (e) {
-      console.error("Error killing server process:", e);
-    }
-    serverProcess = null;
-  }
-});
 
 app.on("activate", function () {
   if (mainWindow === null) {

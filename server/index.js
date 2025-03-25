@@ -130,6 +130,67 @@ app.get("*", (req, res) => {
   }
 });
 
+// Add graceful shutdown handler
+function setupGracefulShutdown(server) {
+  let isShuttingDown = false;
+
+  async function cleanup() {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log('Server is shutting down...');
+
+    // Close the server
+    server.close(() => {
+      console.log('Server closed');
+    });
+
+    // Clean up temp directories
+    try {
+      const tempDirs = [
+        path.join(PUBLIC_DIR, 'previews'),
+        path.join(__dirname, 'temp')
+      ];
+
+      for (const dir of tempDirs) {
+        if (fs.existsSync(dir)) {
+          fs.rmSync(dir, { recursive: true, force: true });
+          console.log(`Cleaned up directory: ${dir}`);
+        }
+      }
+    } catch (err) {
+      console.error('Error cleaning temp directories:', err);
+    }
+
+    // Give active connections time to close
+    await new Promise(resolve => setTimeout(resolve, 1000));
+
+    console.log('Cleanup complete');
+    process.exit(0);
+  }
+
+  // Handle various shutdown signals
+  process.on('SIGTERM', cleanup);
+  process.on('SIGINT', cleanup);
+  process.on('SIGQUIT', cleanup);
+  process.on('message', (msg) => {
+    if (msg === 'shutdown') {
+      cleanup();
+    }
+  });
+
+  // Handle uncaught errors
+  process.on('uncaughtException', (err) => {
+    console.error('Uncaught Exception:', err);
+    cleanup();
+  });
+
+  process.on('unhandledRejection', (reason, promise) => {
+    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+    cleanup();
+  });
+}
+
 // Start the server
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
@@ -144,6 +205,9 @@ const server = app.listen(PORT, () => {
     }
   }
 });
+
+// Setup graceful shutdown
+setupGracefulShutdown(server);
 
 // Handle server errors
 server.on("error", (err) => {
