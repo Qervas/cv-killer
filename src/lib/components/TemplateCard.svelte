@@ -10,7 +10,12 @@
     }
 </script>
 
-<div class="template-card {selected ? 'selected' : ''}" on:click={handleClick}>
+<button 
+    type="button"
+    class="template-card {selected ? 'selected' : ''}" 
+    on:click={handleClick}
+    on:keydown={(e) => e.key === 'Enter' && handleClick()}
+>
     <h3>{template.name}</h3>
     <p>{template.description || "No description"}</p>
     <div class="date">
@@ -20,16 +25,18 @@
             Created: {new Date(template.createdAt).toLocaleDateString()}
         {/if}
     </div>
-</div>
+</button>
 
 <style>
     .template-card {
         padding: 1rem;
-        border: 1px solid #ccc;
-        border-radius: 4px;
+        border: none;
+        background: none;
         cursor: pointer;
-        margin-bottom: 0.5rem;
-        transition: all 0.2s;
+        text-align: left;
+        width: 100%;
+        border-radius: 8px;
+        transition: all 0.2s ease;
     }
 
     .template-card:hover {

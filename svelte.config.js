@@ -4,14 +4,15 @@ import adapter from "@sveltejs/adapter-static";
 const config = {
   kit: {
     adapter: adapter({
-      // Static adapter options
       pages: "build",
       assets: "build",
-      fallback: "index.html", // This is important for SPA routing
+      fallback: "index.html",
       precompress: false,
+      strict: false
     }),
     paths: {
       base: "",
+      assets: ""
     },
     prerender: {
       handleHttpError: ({ path, referrer, message }) => {
@@ -22,7 +23,8 @@ const config = {
         throw new Error(message);
       },
     },
-  },
+    appDir: "_app"
+  }
 };
 
 export default config;

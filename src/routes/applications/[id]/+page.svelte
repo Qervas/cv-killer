@@ -295,11 +295,10 @@
                     </select>
                 </div>
 
-                <!-- Then in the template, update the date display -->
                 {#if !isNew && application.statusHistory?.length > 0}
                     <div class="form-group">
-                        <label>Status History</label>
-                        <div class="status-history">
+                        <label for="status-history">Status History</label>
+                        <div id="status-history" class="status-history">
                             {#each application.statusHistory as statusEntry}
                                 <div class="status-entry">
                                     <span
@@ -455,9 +454,6 @@
         border: 1px solid #ddd;
         border-radius: 4px;
         font-size: 1rem;
-    }
-
-    textarea {
         resize: vertical;
     }
 

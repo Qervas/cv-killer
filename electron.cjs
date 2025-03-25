@@ -1,7 +1,43 @@
 const { app, BrowserWindow, dialog, ipcMain } = require("electron");
 const path = require("path");
 const fs = require("fs");
-const { spawn } = require("child_process");
+const { spawn, exec } = require("child_process");
+const isDev = process.env.NODE_ENV === "development";
+const enableDebug = process.env.DEBUG === "true";
+const util = require('util');
+const execPromise = util.promisify(exec);
+const log = require('electron-log');
+
+// Configure electron-log
+log.transports.file.level = 'info';
+log.transports.console.level = isDev ? 'debug' : 'info';
+log.transports.file.maxSize = 5 * 1024 * 1024; // 5MB
+log.transports.file.maxFiles = 3;
+
+// Add a custom transport for the debug window
+if (enableDebug) {
+  log.transports.debugWindow = {
+    level: 'debug',
+    format: '{text}',
+    write: (message) => {
+      if (debugWindow && !debugWindow.isDestroyed()) {
+        sendToDebugWindow(message, 'info');
+      }
+    }
+  };
+}
+
+// Log application startup information
+log.info('Application starting...');
+log.info('Environment:', {
+  isDev,
+  resourcePath: process.resourcesPath,
+  userData: app.getPath('userData'),
+  nodeVersion: process.version,
+  electronVersion: process.versions.electron,
+  platform: process.platform,
+  arch: process.arch
+});
 
 ipcMain.handle("retry-server", () => {
   if (mainWindow) {
@@ -35,12 +71,7 @@ ipcMain.handle("use-static-mode", () => {
 });
 
 // Debug settings
-const enableDebug = true; // Set to true to enable debugging in production build
-const forceDevTools = true; // Set to true to force DevTools to open in production
-
-// Flag to track if we're in development mode
-const isDev = !app.isPackaged;
-console.log("Running in development mode:", isDev);
+const forceDevTools = false; // Set to true to force DevTools to open in production
 
 // Get user data path
 const userDataPath = app.getPath("userData");
@@ -50,6 +81,24 @@ let mainWindow;
 let debugWindow = null;
 let serverProcess = null;
 let serverPort = 3001;
+
+// Add at the top level
+const processes = new Map();
+let isShuttingDown = false;
+
+function registerProcess(type, process) {
+  processes.set(type, process);
+  
+  process.on('exit', (code) => {
+    console.log(`Process ${type} exited with code ${code}`);
+    processes.delete(type);
+    
+    if (!isShuttingDown) {
+      // Unexpected exit - handle reconnection
+      app.emit('process-exit', { type, code });
+    }
+  });
+}
 
 // Create directories needed for app
 function createAppDirectories() {
@@ -150,7 +199,6 @@ function createDebugWindow() {
 function sendToDebugWindow(message, type = "info") {
   if (debugWindow && !debugWindow.isDestroyed()) {
     try {
-      // Escape special characters that might break the JavaScript
       const safeMessage = String(message).replace(/[\\"\n\r\t]/g, (match) => {
         return {
           "\\": "\\\\",
@@ -161,58 +209,63 @@ function sendToDebugWindow(message, type = "info") {
         }[match];
       });
 
-      // Simpler approach to sending messages
       debugWindow.webContents
         .executeJavaScript(
           `
-        try {
-          const logLine = document.createElement('div');
-          logLine.className = '${type}';
-          logLine.textContent = "${safeMessage}";
-          document.getElementById('logs').appendChild(logLine);
-          window.scrollTo(0, document.body.scrollHeight);
-        } catch (e) {
-          console.error("Error adding log:", e);
-        }
-      `,
+          try {
+            const logLine = document.createElement('div');
+            logLine.className = '${type}';
+            logLine.textContent = "${safeMessage}";
+            document.getElementById('logs').appendChild(logLine);
+            window.scrollTo(0, document.body.scrollHeight);
+          } catch (e) {
+            console.error("Error adding log:", e);
+          }
+        `,
         )
         .catch((err) => {
-          // Just log the error locally and continue
-          console.error("Debug window logging error:", err.message);
+          log.error("Debug window logging error:", err.message);
         });
     } catch (error) {
-      console.error("Failed to format debug message:", error);
+      log.error("Failed to format debug message:", error);
     }
   }
 }
 
-// Get server diagnostics
+// Utility function to get server file diagnostics
 function getServerDiagnostics(serverPath) {
-  const diagnostics = {
-    serverPath,
-    exists: false,
-    directory: null,
-    directoryExists: false,
-    directoryContents: null,
-    nodeVersion: process.version,
-    electronVersion: process.versions.electron,
-  };
-
   try {
-    diagnostics.exists = fs.existsSync(serverPath);
-
-    const directory = path.dirname(serverPath);
-    diagnostics.directory = directory;
-
-    if (fs.existsSync(directory)) {
-      diagnostics.directoryExists = true;
-      diagnostics.directoryContents = fs.readdirSync(directory);
-    }
+    const stats = fs.statSync(serverPath);
+    return {
+      exists: true,
+      size: stats.size,
+      permissions: stats.mode,
+      lastModified: stats.mtime,
+      isFile: stats.isFile(),
+      absolutePath: path.resolve(serverPath)
+    };
   } catch (err) {
-    diagnostics.error = err.message;
+    return {
+    exists: false,
+      error: err.message
+    };
   }
+}
 
-  return diagnostics;
+// Utility function to check server availability
+async function checkServerAvailability(url, maxRetries = 3) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      const response = await fetch(url);
+      return response.ok;
+  } catch (err) {
+      console.log(`Server health check attempt ${i + 1} failed:`, err.message);
+      if (i < maxRetries - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+  }
+    }
+  }
+  return false;
 }
 
 // Find a valid Node.js path
@@ -294,19 +347,24 @@ function getNodePath() {
 // Add cleanup function at the top level
 async function cleanupApplication() {
   console.log('Cleaning up application resources...');
+  isShuttingDown = true;
 
-  // Kill server process if it exists
+  // First, try graceful shutdown of server process
   if (serverProcess) {
     try {
       const isRunning = serverProcess.pid && !serverProcess.killed;
       if (isRunning) {
-        console.log(`Killing server process (PID: ${serverProcess.pid})`);
+        console.log(`Attempting graceful shutdown of server process (PID: ${serverProcess.pid})`);
+        
+        // Send SIGTERM first
         serverProcess.kill('SIGTERM');
+        
         // Give it a moment to shut down gracefully
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Force kill if still running
         if (!serverProcess.killed) {
+          console.log('Server still running, forcing termination...');
           serverProcess.kill('SIGKILL');
         }
       }
@@ -316,14 +374,74 @@ async function cleanupApplication() {
     serverProcess = null;
   }
 
-  // Clean up any remaining processes on our ports
+  // Enhanced port cleanup with retries and force close
   try {
+    console.log('Cleaning up ports and connections...');
+    
+    // On macOS, use a more aggressive approach to close lingering connections
+    if (process.platform === 'darwin') {
+      try {
+        // First try to identify all processes using our ports
+        const { stdout } = await execPromise('lsof -i :3001-3010 -n -P');
+        
+        const processes = stdout.split('\n')
+          .slice(1) // Skip header
+          .filter(Boolean)
+          .map(line => {
+            const parts = line.trim().split(/\s+/);
+            return {
+              pid: parseInt(parts[1], 10),
+              fd: parts[3].replace(/[uwx]/g, ''), // Clean up file descriptor
+              state: parts[parts.length - 1]
+            };
+          });
+
+        // Group by PID to handle all connections for each process
+        const pidGroups = processes.reduce((acc, curr) => {
+          if (!acc[curr.pid]) acc[curr.pid] = [];
+          acc[curr.pid].push(curr);
+          return acc;
+        }, {});
+
+        // Handle each process group
+        for (const [pid, connections] of Object.entries(pidGroups)) {
+          if (parseInt(pid, 10) === process.pid) continue; // Skip our own process
+
+          console.log(`Cleaning up ${connections.length} connections for PID ${pid}`);
+          
+          try {
+            // Try SIGTERM first
+            process.kill(parseInt(pid, 10), 'SIGTERM');
+            await new Promise(resolve => setTimeout(resolve, 500));
+            
+            // Check if process still exists and has CLOSE_WAIT connections
+            try {
+              const { stdout: checkStdout } = await execPromise(`lsof -p ${pid} -i :3001-3010 -n -P`);
+              if (checkStdout.includes('CLOSE_WAIT')) {
+                console.log(`Force closing CLOSE_WAIT connections for PID ${pid}`);
+                process.kill(parseInt(pid, 10), 'SIGKILL');
+              }
+            } catch (e) {
+              // Process might be gone already, which is fine
+            }
+          } catch (err) {
+            console.error(`Error cleaning up PID ${pid}:`, err);
+          }
+        }
+      } catch (err) {
+        if (!err.message.includes('No such process')) {
+          console.error('Error in enhanced port cleanup:', err);
+        }
+      }
+    }
+
+    // Additional cleanup for any remaining connections
     await cleanupPorts(3001, 3010);
   } catch (err) {
-    console.error('Error cleaning up ports:', err);
+    console.error('Error in port cleanup:', err);
   }
 
-  // Clean up temp directories
+  // Clean up temp directories with improved error handling
   try {
     const tempDirs = [
       path.join(userDataPath, 'public', 'previews'),
@@ -332,23 +450,54 @@ async function cleanupApplication() {
 
     for (const dir of tempDirs) {
       if (fs.existsSync(dir)) {
-        fs.rmSync(dir, { recursive: true, force: true });
-        console.log(`Cleaned up directory: ${dir}`);
+        try {
+          const files = fs.readdirSync(dir);
+          for (const file of files) {
+            try {
+              const filePath = path.join(dir, file);
+              // Skip the TinyTeX directory
+              if (filePath.includes('tinytex')) {
+                console.log('Preserving TinyTeX directory:', filePath);
+                continue;
+              }
+              
+              const fileStats = fs.statSync(filePath);
+              if (fileStats.isDirectory()) {
+                fs.rmSync(filePath, { recursive: true, force: true });
+              } else {
+                fs.unlinkSync(filePath);
+              }
+            } catch (fileErr) {
+              console.error(`Error removing file ${file} in ${dir}:`, fileErr);
+            }
+          }
+          console.log(`Cleaned up files in directory: ${dir}`);
+        } catch (rmErr) {
+          console.error(`Error accessing directory ${dir}:`, rmErr);
+        }
       }
     }
   } catch (err) {
     console.error('Error cleaning temp directories:', err);
   }
+
+  // Reset state
+  mainWindow = null;
+  serverProcess = null;
+  if (debugWindow) {
+    debugWindow.destroy();
+    debugWindow = null;
+  }
 }
 
-// Modify the app quit handler
-app.on("window-all-closed", async function () {
-  console.log('All windows closed, cleaning up...');
+// Modify the app quit handler to ensure cleanup
+app.on("window-all-closed", async () => {
+  isShuttingDown = true;
   
-  // Run cleanup
+  // Perform cleanup before quitting
   await cleanupApplication();
-
-  // Quit the app if not on macOS
+  
+  // Quit the app (except on macOS)
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -356,18 +505,23 @@ app.on("window-all-closed", async function () {
 
 // Add handlers for other termination scenarios
 app.on('before-quit', async (event) => {
-  console.log('Application is about to quit...');
-  event.preventDefault(); // Prevent immediate quit
-  await cleanupApplication();
-  app.exit(); // Force exit after cleanup
+  if (!isShuttingDown) {
+    event.preventDefault(); // Prevent immediate quit
+    isShuttingDown = true;
+    await cleanupApplication();
+    app.exit(); // Force exit after cleanup
+  }
 });
 
 // Handle process signals
 ['SIGINT', 'SIGTERM', 'SIGQUIT'].forEach(signal => {
   process.on(signal, async () => {
-    console.log(`Received ${signal}, cleaning up...`);
-    await cleanupApplication();
-    process.exit(0);
+    if (!isShuttingDown) {
+      console.log(`Received ${signal}, cleaning up...`);
+      isShuttingDown = true;
+      await cleanupApplication();
+      process.exit(0);
+    }
   });
 });
 
@@ -387,14 +541,14 @@ function setupServerProcessHandlers(serverProcess) {
   // Handle server process stdout/stderr
   serverProcess.stdout?.on('data', (data) => {
     console.log(`Server: ${data}`);
-    if (enableDebug) {
+      if (enableDebug) {
       sendToDebugWindow(data.toString(), 'info');
     }
   });
 
   serverProcess.stderr?.on('data', (data) => {
     console.error(`Server error: ${data}`);
-    if (enableDebug) {
+          if (enableDebug) {
       sendToDebugWindow(data.toString(), 'error');
     }
   });
@@ -408,71 +562,79 @@ async function initializeServer() {
       sendToDebugWindow("Starting server initialization...", "info");
     }
 
-    // Determine which server script to use - use CommonJS version for production
-    const serverPath = isDev
-      ? path.join(__dirname, "server/index.js")
-      : path.join(process.resourcesPath, "app", "server", "index.js");
+    // Determine server path based on environment
+    let serverPath;
+    if (isDev) {
+      serverPath = path.join(__dirname, "server/index.js");
+    } else {
+      // For packaged app, try multiple possible locations
+      const possiblePaths = [
+        path.join(process.resourcesPath, "app.asar", "server", "index.js"),
+        path.join(process.resourcesPath, "app", "server", "index.js"),
+        path.join(__dirname, "server", "index.js")
+      ];
+      serverPath = possiblePaths.find(p => fs.existsSync(p));
+      
+      if (!serverPath) {
+        throw new Error(`Server file not found in any of the expected locations: ${possiblePaths.join(', ')}`);
+      }
+    }
 
     console.log(`Using server path: ${serverPath}`);
 
+    // Get server file diagnostics
+    const diagnostics = getServerDiagnostics(serverPath);
+    console.log('Server diagnostics:', diagnostics);
+
     if (enableDebug) {
       sendToDebugWindow(`Server path: ${serverPath}`, "info");
-    }
-
-    // Check if server file exists
-    if (!fs.existsSync(serverPath)) {
-      const errorMsg = `Server file not found: ${serverPath}`;
-      console.error(errorMsg);
-      if (enableDebug) {
-        sendToDebugWindow(errorMsg, "error");
-      }
-
-      // Try fallback if production server file is missing
-      if (!isDev) {
-        const fallbackPath = path.join(
-          process.resourcesPath,
-          "app",
-          "server",
-          "server-minimal.js",
-        );
-        if (fs.existsSync(fallbackPath)) {
-          console.log(`Found fallback server at: ${fallbackPath}`);
-          if (enableDebug) {
-            sendToDebugWindow(
-              `Found fallback server at: ${fallbackPath}`,
-              "info",
-            );
-          }
-          return startFallbackServer(fallbackPath);
-        }
-      }
-
-      throw new Error(errorMsg);
+      sendToDebugWindow(`Server diagnostics: ${JSON.stringify(diagnostics, null, 2)}`, "info");
     }
 
     // Define the server environment variables
     const serverEnv = {
-      ...process.env, // Include all existing env vars
+      ...process.env,
       ELECTRON_RUN: "true",
       USER_DATA_PATH: userDataPath,
       SERVER_PATH: serverPath,
       NODE_ENV: isDev ? "development" : "production",
       PORT: "3001",
       DEBUG: enableDebug ? "true" : "false",
+      RESOURCE_PATH: process.resourcesPath || path.dirname(process.execPath)
     };
 
     console.log("Starting server with environment:", serverEnv);
 
-    // For dev environment, use spawn directly
+    // For packaged app, ensure we're using the correct working directory
+    const serverCwd = isDev ? __dirname : path.dirname(serverPath);
+
+    // Create the server process
     const childProcess = spawn("node", [serverPath], {
       env: serverEnv,
       stdio: ["pipe", "pipe", "pipe"],
+      cwd: serverCwd
     });
 
-    let serverPort = 3001;
-    let serverStarted = false;
+    // Set up server process handlers
+    setupServerProcessHandlers(childProcess);
 
     return new Promise((resolve, reject) => {
+      let serverStarted = false;
+      let startupTimeout = setTimeout(() => {
+        if (!serverStarted) {
+          console.log("Server startup timeout - checking health endpoint");
+          checkServerAvailability(`http://localhost:${serverPort}`)
+            .then(available => {
+              if (available) {
+                serverStarted = true;
+                resolve({ port: serverPort, process: childProcess });
+              } else {
+                reject(new Error("Server health check failed after timeout"));
+              }
+            });
+        }
+      }, 5000);
+
       childProcess.stdout.on("data", (data) => {
         const output = data.toString();
         console.log(`Server: ${output}`);
@@ -481,14 +643,14 @@ async function initializeServer() {
           sendToDebugWindow(output, "info");
         }
 
-        // Look for port in the output
-        const portMatch = output.match(
-          /Server running on http:\/\/localhost:(\d+)/,
-        );
+        if (output.includes("Server running on http://localhost:")) {
+          const portMatch = output.match(/localhost:(\d+)/);
         if (portMatch && portMatch[1]) {
           serverPort = parseInt(portMatch[1], 10);
           serverStarted = true;
+            clearTimeout(startupTimeout);
           resolve({ port: serverPort, process: childProcess });
+          }
         }
       });
 
@@ -503,49 +665,19 @@ async function initializeServer() {
 
       childProcess.on("error", (err) => {
         console.error(`Failed to start server: ${err}`);
-
-        if (enableDebug) {
-          sendToDebugWindow(`Server process error: ${err.message}`, "error");
-        }
-
+        clearTimeout(startupTimeout);
         reject(err);
       });
 
       childProcess.on("exit", (code) => {
-        const message = `Server process exited with code ${code}`;
-        console.log(message);
-
-        if (enableDebug) {
-          sendToDebugWindow(message, code === 0 ? "info" : "error");
-        }
-
         if (!serverStarted) {
+          clearTimeout(startupTimeout);
           reject(new Error(`Server exited with code ${code} before starting`));
         }
       });
-
-      // Timeout - assume server started if no explicit failure
-      setTimeout(() => {
-        if (!serverStarted) {
-          console.log("Server startup timeout - assuming it started anyway");
-          if (enableDebug) {
-            sendToDebugWindow(
-              "Server startup timeout - assuming it works",
-              "warning",
-            );
-          }
-          resolve({ port: serverPort, process: childProcess });
-        }
-      }, 10000);
     });
   } catch (err) {
     console.error("Server initialization error:", err);
-    if (enableDebug) {
-      sendToDebugWindow(
-        `Server initialization failed: ${err.message}`,
-        "error",
-      );
-    }
     throw err;
   }
 }
@@ -649,304 +781,200 @@ function startFallbackServer(serverPath) {
   });
 }
 
-async function createWindow() {
-  try {
-    // Create directories
-    createAppDirectories();
-
-    // Create the browser window first
-    mainWindow = new BrowserWindow({
-      width: 1200,
-      height: 800,
-      webPreferences: {
-        nodeIntegration: false,
-        contextIsolation: true, // Change to true for security
-        preload: path.join(__dirname, "preload.js"), // Add a preload script
-      },
-      show: false,
-    });
-
-    // Show loading screen with corrected script
-    mainWindow.loadURL(`data:text/html;charset=utf-8,
+const LOADING_HTML = `
+<!DOCTYPE html>
       <html>
         <head>
-          <title>Starting CV Killer...</title>
           <style>
             body {
+      background: #1a1b1e;
+      color: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      margin: 0;
               display: flex;
-              flex-direction: column;
-              align-items: center;
               justify-content: center;
+      align-items: center;
               height: 100vh;
-              margin: 0;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-              background: #f5f5f5;
-              color: #333;
+      text-align: center;
             }
-            h1 { margin-bottom: 30px; }
             .loader {
-              border: 6px solid #f3f3f3;
-              border-top: 6px solid #007bff;
+      width: 48px;
+      height: 48px;
+      border: 5px solid #FFF;
+      border-bottom-color: transparent;
               border-radius: 50%;
-              width: 60px;
-              height: 60px;
-              animation: spin 2s linear infinite;
+      animation: rotation 1s linear infinite;
               margin-bottom: 20px;
             }
-            @keyframes spin {
-              0% { transform: rotate(0deg); }
-              100% { transform: rotate(360deg); }
-            }
-            .status {
-              margin-top: 20px;
-              padding: 10px;
-              max-width: 80%;
-              text-align: center;
-            }
-            .error {
-              color: #721c24;
-              background-color: #f8d7da;
-              padding: 15px;
-              border-radius: 4px;
-              margin-top: 20px;
-              max-width: 80%;
-              text-align: center;
-              display: none; /* Hide by default */
-            }
-            button {
-              margin-top: 20px;
-              padding: 10px 20px;
-              background-color: #007bff;
-              color: white;
+    @keyframes rotation {
+      0% { transform: rotate(0deg) }
+      100% { transform: rotate(360deg) }
+    }
+    .error { color: #ff4d4d; }
+    .retry-button {
+      background: #5865F2;
               border: none;
+      padding: 10px 20px;
               border-radius: 4px;
+      color: white;
               cursor: pointer;
-              font-size: 16px;
-            }
-            button:disabled {
-              background-color: #cccccc;
-              cursor: not-allowed;
+      margin-top: 15px;
             }
           </style>
         </head>
         <body>
-          <h1>CV Killer</h1>
+  <div id="content">
           <div class="loader"></div>
-          <h2>Starting Application...</h2>
-          <div class="status">Please wait while the application initializes</div>
-          <div id="error-container" class="error">
-            <strong>Error:</strong> <span id="error-message">Unknown error</span>
-            <div>
-              <button id="retry-button">Retry</button>
-              <button id="static-button">Use Offline Mode</button>
+    <div id="status">Loading application...</div>
+    <button id="retry-button" class="retry-button" style="display: none" onclick="window.electron.retry()">
+      Retry Connection
+    </button>
             </div>
-          </div>
+  <script>
+    let retryCount = 0;
+    const maxRetries = 3;
+    
+    window.electron = {
+      retry: () => {
+        if (retryCount < maxRetries) {
+          retryCount++;
+          document.getElementById('status').textContent = 'Retrying connection...';
+          document.getElementById('retry-button').style.display = 'none';
+          // Send retry message to main process
+          window.postMessage('retry-connection', '*');
+        }
+      }
+    };
+  </script>
         </body>
       </html>
-    `);
+`;
 
-    // Show window once loaded
-    mainWindow.once("ready-to-show", () => {
-      mainWindow.show();
-    });
-
-    // Wait for page to load before we start setting up stuff
-    await new Promise((resolve) => {
-      mainWindow.webContents.once("did-finish-load", resolve);
-    });
-
-    // Start the server
-    try {
-      const result = await initializeServer();
-      serverProcess = result.process;
-      serverPort = result.port;
-
-      // Now load the actual application
-      const appUrl = `http://localhost:${serverPort}`;
-      console.log(`Loading application from ${appUrl}`);
-
-      if (enableDebug) {
-        sendToDebugWindow(`Loading application from ${appUrl}`, "info");
-      }
-
-      // Try to connect to the server
-      let serverAvailable = await checkServerWithRetry(appUrl, 5, 1000);
-      if (serverAvailable) {
-        mainWindow.loadURL(appUrl);
-      } else {
-        throw new Error("Could not connect to server after multiple attempts");
-      }
-    } catch (err) {
-      console.error("Failed to start server:", err);
-
-      // Determine static fallback path
-      const staticPath = isDev
-        ? path.join(__dirname, "build", "index.html")
-        : path.join(process.resourcesPath, "app", "build", "index.html");
-
-      const staticExists = fs.existsSync(staticPath);
-      console.log(
-        `Static fallback ${staticExists ? "available" : "not available"} at: ${staticPath}`,
-      );
-
-      // IMPORTANT: Use setTimeout to ensure the DOM is fully loaded before manipulation
-      setTimeout(() => {
-        mainWindow.webContents
-          .executeJavaScript(
-            `
-          (function() {
-            try {
-              // Find our elements safely
-              const loader = document.querySelector('.loader');
-              const status = document.querySelector('.status');
-              const errorMsg = document.getElementById('error-message');
-              const errorContainer = document.getElementById('error-container');
-
-              // Update UI elements if they exist
-              if (loader) loader.style.display = 'none';
-              if (status) status.textContent = 'Failed to start application server';
-              if (errorMsg) errorMsg.textContent = ${JSON.stringify(err.message)};
-              if (errorContainer) errorContainer.style.display = 'block';
-
-              // Add event listeners to buttons
-              const retryButton = document.getElementById('retry-button');
-              if (retryButton) {
-                retryButton.addEventListener('click', () => {
-                  console.log('Retry clicked');
-                  window.location.reload();
-                });
-              }
-
-              // Setup static mode button if fallback is available
-              ${
-                staticExists
-                  ? `
-                const staticButton = document.getElementById('static-button');
-                if (staticButton) {
-                  staticButton.addEventListener('click', () => {
-                    console.log('Static mode clicked');
-                    if (status) status.textContent = 'Loading in offline mode...';
-                    if (errorContainer) errorContainer.style.display = 'none';
-                    window.location.href = 'file://${staticPath.replace(/\\/g, "/")}';
-                  });
-                }
-              `
-                  : `
-                // No static fallback available
-                const staticButton = document.getElementById('static-button');
-                if (staticButton) {
-                  staticButton.disabled = true;
-                  staticButton.textContent = 'Offline Mode Unavailable';
-                }
-              `
-              }
-
-              console.log('Error UI successfully updated');
-            } catch (e) {
-              console.error('Error updating UI:', e);
-            }
-          })();
-        `,
-          )
-          .catch((err) => {
-            console.error("Failed to execute error UI script:", err);
-          });
-      }, 500); // Give the DOM time to load
-    }
-
-    // Open DevTools in development or if forced
-    if (isDev || forceDevTools) {
-      mainWindow.webContents.openDevTools();
-    }
-
-    // After starting the server process, add:
-    setupServerProcessHandlers(serverProcess);
-  } catch (err) {
-    console.error("Error during app initialization:", err);
-    dialog.showMessageBox({
-      type: "error",
-      title: "Application Error",
-      message: `An error occurred while starting the application: ${err.message}`,
-    });
-  }
-}
-
-async function checkServerAvailability(url) {
-  return new Promise((resolve) => {
-    try {
-      console.log(`Checking server availability at ${url}/api/health...`);
-
-      const http = require("http");
-      const testRequest = http.get(`${url}/api/health`, (res) => {
-        console.log(`Server responded with status: ${res.statusCode}`);
-
-        // Read the response body
-        let data = "";
-        res.on("data", (chunk) => {
-          data += chunk;
-        });
-
-        res.on("end", () => {
-          console.log("Response data:", data);
-          resolve(res.statusCode === 200);
-        });
-      });
-
-      testRequest.on("error", (err) => {
-        console.error(`Server check error: ${err.message}`);
-        resolve(false);
-      });
-
-      // Set timeout to 5 seconds
-      testRequest.setTimeout(5000, () => {
-        testRequest.destroy();
-        console.log("Server check timed out after 5 seconds");
-        resolve(false);
-      });
-    } catch (err) {
-      console.error("Error during server availability check:", err);
-      resolve(false);
-    }
+// Main window creation with proper error handling
+async function createMainWindow() {
+  const win = new BrowserWindow({
+    width: 1200,
+    height: 800,
+    webPreferences: {
+      nodeIntegration: true,
+      contextIsolation: false,
+      webSecurity: !isDev,
+      webviewTag: true
+    },
+    show: false,
+    backgroundColor: '#1a1b1e'
   });
-}
 
-// Helper function to check if server is available
-async function checkServerWithRetry(url, maxRetries = 3, retryDelay = 1000) {
-  console.log(`Checking server with ${maxRetries} retries...`);
-
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    console.log(`Attempt ${attempt}/${maxRetries} to connect to server...`);
-
-    const available = await checkServerAvailability(url);
-    if (available) {
-      console.log(`Server is available on attempt ${attempt}`);
-      return true;
+  // Set up error handling for window loading
+  win.webContents.on('did-fail-load', async (event, errorCode, errorDescription) => {
+    console.error('Window failed to load:', errorDescription);
+    
+    // If in development mode and the first load fails, try the dev server
+    if (isDev && errorCode === -102 && event.target.getURL().includes('localhost:3001')) {
+      console.log('Retrying with Vite dev server...');
+      try {
+        await win.loadURL('http://localhost:5173');
+        return;
+      } catch (err) {
+        console.error('Failed to load dev server:', err);
+      }
     }
+    
+    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
+    win.webContents.executeJavaScript(`
+      document.getElementById('status').innerHTML = 'Failed to load application: ${errorDescription}<br>Retrying...';
+      document.getElementById('status').className = 'error';
+      document.getElementById('retry-button').style.display = 'block';
+    `);
+  });
 
-    if (attempt < maxRetries) {
-      console.log(
-        `Server not available, waiting ${retryDelay}ms before retry...`,
-      );
-      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+  // Load the loading screen first
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
+  win.show();
+
+  // In development mode, try to connect to Vite dev server first
+  if (isDev) {
+    try {
+      console.log('Attempting to connect to Vite dev server...');
+      await win.loadURL('http://localhost:5173');
+      console.log('Successfully connected to Vite dev server');
+      return win;
+    } catch (err) {
+      console.log('Failed to connect to Vite dev server, falling back to production mode:', err);
     }
   }
 
-  console.log(`Server not available after ${maxRetries} attempts`);
-  return false;
+  // Production mode or dev server fallback
+  let serverStartAttempts = 0;
+  const MAX_SERVER_ATTEMPTS = 3;
+  const RETRY_DELAY = 2000;
+
+  const connectToServer = async () => {
+    try {
+      const { port } = await initializeServer();
+      const appUrl = `http://localhost:${port}`;
+      
+      await win.webContents.executeJavaScript(`
+        document.getElementById('status').textContent = 'Connecting to application server...';
+      `);
+
+      // Wait for server to be ready
+      let serverReady = false;
+      for (let i = 0; i < 10; i++) {
+        try {
+          const response = await fetch(`${appUrl}/api/health`);
+          if (response.ok) {
+            serverReady = true;
+            break;
+          }
+        } catch (e) {
+          await new Promise(resolve => setTimeout(resolve, 1000));
+        }
+      }
+
+      if (!serverReady) {
+        throw new Error('Server health check failed');
+      }
+
+      await win.loadURL(appUrl);
+      console.log('Application loaded successfully');
+
+    } catch (error) {
+      console.error('Server connection error:', error);
+      serverStartAttempts++;
+
+      if (serverStartAttempts < MAX_SERVER_ATTEMPTS) {
+        await win.webContents.executeJavaScript(`
+          document.getElementById('status').innerHTML = 'Connection failed.<br>Retrying... (${serverStartAttempts}/${MAX_SERVER_ATTEMPTS})';
+        `);
+        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        return connectToServer();
+      } else {
+        await win.webContents.executeJavaScript(`
+          document.getElementById('status').innerHTML = 'Unable to connect to the application server.<br>Please check your connection and try again.';
+          document.getElementById('status').className = 'error';
+          document.getElementById('retry-button').style.display = 'block';
+        `);
+      }
+    }
+  };
+
+  await connectToServer();
+  return win;
 }
 
 // App lifecycle events
-app.whenReady().then(createWindow);
+app.whenReady().then(createMainWindow);
 
 app.on("activate", function () {
   if (mainWindow === null) {
-    createWindow();
+    createMainWindow();
   }
 });
 
 // Handle uncaught exceptions
 process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
+  log.error("Uncaught Exception:", error);
 
   if (enableDebug && debugWindow) {
     sendToDebugWindow(`Uncaught Exception: ${error.message}`, "error");
@@ -956,7 +984,124 @@ process.on("uncaughtException", (error) => {
     dialog.showErrorBox(
       "Unexpected Error",
       `An unexpected error occurred: ${error.message}\n\n` +
+        `Please check the logs at: ${log.transports.file.getFile().path}\n\n` +
         `Please restart the application.`,
     );
   }
 });
+
+// Add unhandled rejection handler
+process.on('unhandledRejection', (reason, promise) => {
+  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
+});
+
+// Add a more reliable port cleanup function for macOS
+async function cleanupPorts(startPort, endPort) {
+  console.log(`Cleaning up any processes using ports ${startPort}-${endPort}...`);
+  
+  try {
+    // For macOS, use a more reliable approach
+    if (process.platform === 'darwin') {
+      // Use netstat on macOS which doesn't require elevated permissions
+      const { stdout } = await execPromise(`netstat -anv | grep LISTEN`);
+      
+      // Process each line looking for our ports
+      const portRegex = /\.(\d+)\s+/;
+      const pidRegex = /\s+(\d+)\s*$/;
+      
+      const lines = stdout.split('\n');
+      const killPromises = [];
+      
+      for (const line of lines) {
+        const portMatch = line.match(portRegex);
+        if (portMatch) {
+          const port = parseInt(portMatch[1], 10);
+          if (port >= startPort && port <= endPort) {
+            const pidMatch = line.match(pidRegex);
+            if (pidMatch) {
+              const pid = parseInt(pidMatch[1], 10);
+              if (pid !== process.pid) {
+                console.log(`Found process ${pid} using port ${port}, attempting to terminate`);
+                try {
+                  // First try a gentle SIGTERM
+                  process.kill(pid, 'SIGTERM');
+                  
+                  // Wait a moment then check if still running
+                  await new Promise(resolve => setTimeout(resolve, 500));
+                  
+                  try {
+                    // Check if process still exists
+                    process.kill(pid, 0);
+                    // If we get here, process still exists, try SIGKILL
+                    console.log(`Process ${pid} still running, sending SIGKILL`);
+                    process.kill(pid, 'SIGKILL');
+                  } catch (e) {
+                    // Process no longer exists
+                    console.log(`Process ${pid} terminated successfully`);
+                  }
+                } catch (killErr) {
+                  console.error(`Error killing process ${pid}:`, killErr.message);
+                }
+              }
+            }
+          }
+        }
+      }
+    } else if (process.platform === 'win32') {
+      // Windows approach
+      for (let port = startPort; port <= endPort; port++) {
+        try {
+          const { stdout } = await execPromise(`netstat -ano | findstr :${port}`);
+          if (stdout) {
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+              const parts = line.trim().split(/\s+/);
+              if (parts.length > 4) {
+                const pid = parseInt(parts[parts.length - 1], 10);
+                if (pid && pid !== process.pid) {
+                  console.log(`Found process ${pid} using port ${port}, attempting to terminate`);
+                  await execPromise(`taskkill /F /PID ${pid}`);
+                }
+              }
+            }
+          }
+        } catch (err) {
+          // Ignore errors when no process is found
+          if (!err.message.includes('no tasks')) {
+            console.error(`Error checking port ${port}:`, err.message);
+          }
+        }
+      }
+    } else {
+      // Linux and other Unix-like systems
+      try {
+        const { stdout } = await execPromise(`lsof -i :${startPort}-${endPort} -t`);
+        if (stdout) {
+          const pids = stdout.split('\n').filter(Boolean);
+          for (const pid of pids) {
+            if (parseInt(pid, 10) !== process.pid) {
+              console.log(`Found process ${pid} using a port in range ${startPort}-${endPort}, attempting to terminate`);
+              await execPromise(`kill -15 ${pid}`);
+              // Follow up with force kill after a delay if needed
+              setTimeout(async () => {
+                try {
+                  await execPromise(`kill -0 ${pid}`);
+                  console.log(`Process ${pid} still running, sending SIGKILL`);
+                  await execPromise(`kill -9 ${pid}`);
+    } catch (e) {
+                  // Process no longer exists
+                }
+              }, 1000);
+            }
+          }
+        }
+      } catch (err) {
+        console.error(`Error finding processes on ports ${startPort}-${endPort}:`, err.message);
+      }
+    }
+    
+    console.log(`Port cleanup completed for range ${startPort}-${endPort}`);
+  } catch (err) {
+    console.error('Port cleanup error:', err.message);
+  }
+}

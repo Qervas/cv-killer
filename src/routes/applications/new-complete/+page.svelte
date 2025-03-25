@@ -149,25 +149,15 @@
                     {:else}
                         <div class="company-selector">
                             {#each companies as company}
-                                <div
-                                    class="company-card {selectedCompany?.id ===
-                                    company.id
-                                        ? 'selected'
-                                        : ''}"
-                                    on:click={() => (selectedCompany = company)}
+                                <button
+                                    type="button"
+                                    class="company-card {selectedCompany?.id === company.id ? 'selected' : ''}"
+                                    on:click={() => selectCompany(company)}
+                                    on:keydown={(e) => e.key === 'Enter' && selectCompany(company)}
                                 >
                                     <h3>{company.name}</h3>
-                                    {#if company.position}
-                                        <div class="position">
-                                            {company.position}
-                                        </div>
-                                    {/if}
-                                    {#if company.location}
-                                        <div class="location">
-                                            {company.location}
-                                        </div>
-                                    {/if}
-                                </div>
+                                    <p>{company.position}</p>
+                                </button>
                             {/each}
                         </div>
                     {/if}
@@ -184,32 +174,26 @@
                         </div>
                     {:else}
                         <div class="template-selector">
-                            <div
-                                class="template-card {selectedCvTemplate ===
-                                null
-                                    ? 'selected'
-                                    : ''}"
-                                on:click={() => (selectedCvTemplate = null)}
+                            <button
+                                type="button"
+                                class="template-card {selectedCvTemplate === null ? 'selected' : ''}"
+                                on:click={() => selectCvTemplate(null)}
+                                on:keydown={(e) => e.key === 'Enter' && selectCvTemplate(null)}
                             >
-                                <h3>None</h3>
-                                <p>Don't include a CV</p>
-                            </div>
+                                <h3>No Template</h3>
+                                <p>Start from scratch</p>
+                            </button>
 
                             {#each cvTemplates as template}
-                                <div
-                                    class="template-card {selectedCvTemplate?.id ===
-                                    template.id
-                                        ? 'selected'
-                                        : ''}"
-                                    on:click={() =>
-                                        (selectedCvTemplate = template)}
+                                <button
+                                    type="button"
+                                    class="template-card {selectedCvTemplate?.id === template.id ? 'selected' : ''}"
+                                    on:click={() => selectCvTemplate(template)}
+                                    on:keydown={(e) => e.key === 'Enter' && selectCvTemplate(template)}
                                 >
                                     <h3>{template.name}</h3>
-                                    <p>
-                                        {template.description ||
-                                            "No description"}
-                                    </p>
-                                </div>
+                                    <p>{template.description}</p>
+                                </button>
                             {/each}
                         </div>
                     {/if}
@@ -226,34 +210,26 @@
                         </div>
                     {:else}
                         <div class="template-selector">
-                            <div
-                                class="template-card {selectedCoverLetterTemplate ===
-                                null
-                                    ? 'selected'
-                                    : ''}"
-                                on:click={() =>
-                                    (selectedCoverLetterTemplate = null)}
+                            <button
+                                type="button"
+                                class="template-card {selectedCoverLetterTemplate === null ? 'selected' : ''}"
+                                on:click={() => selectCoverLetterTemplate(null)}
+                                on:keydown={(e) => e.key === 'Enter' && selectCoverLetterTemplate(null)}
                             >
-                                <h3>None</h3>
-                                <p>Don't include a cover letter</p>
-                            </div>
+                                <h3>No Template</h3>
+                                <p>Start from scratch</p>
+                            </button>
 
                             {#each coverLetterTemplates as template}
-                                <div
-                                    class="template-card {selectedCoverLetterTemplate?.id ===
-                                    template.id
-                                        ? 'selected'
-                                        : ''}"
-                                    on:click={() =>
-                                        (selectedCoverLetterTemplate =
-                                            template)}
+                                <button
+                                    type="button"
+                                    class="template-card {selectedCoverLetterTemplate?.id === template.id ? 'selected' : ''}"
+                                    on:click={() => selectCoverLetterTemplate(template)}
+                                    on:keydown={(e) => e.key === 'Enter' && selectCoverLetterTemplate(template)}
                                 >
                                     <h3>{template.name}</h3>
-                                    <p>
-                                        {template.description ||
-                                            "No description"}
-                                    </p>
-                                </div>
+                                    <p>{template.description}</p>
+                                </button>
                             {/each}
                         </div>
                     {/if}
@@ -379,12 +355,14 @@
 
     .company-card,
     .template-card {
-        padding: 0.75rem;
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        background-color: white;
+        border: none;
+        background: none;
         cursor: pointer;
-        transition: all 0.2s;
+        text-align: left;
+        width: 100%;
+        padding: 1rem;
+        border-radius: 8px;
+        transition: all 0.2s ease;
     }
 
     .company-card:hover,
@@ -398,21 +376,9 @@
         background-color: #e6f2ff;
     }
 
-    .company-card h3,
     .template-card h3 {
         margin: 0;
         font-size: 1rem;
-    }
-
-    .company-card .position {
-        font-weight: 500;
-        margin-top: 0.25rem;
-    }
-
-    .company-card .location {
-        color: #666;
-        font-size: 0.8rem;
-        margin-top: 0.25rem;
     }
 
     .template-card p {

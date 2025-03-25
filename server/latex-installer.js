@@ -10,10 +10,16 @@ const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const INSTALL_DIR = path.join(__dirname, "..", "tinytex");
+// Get the installation directory from user data path or fall back to default
+const USER_DATA_PATH = process.env.USER_DATA_PATH || path.join(__dirname, "..");
+const INSTALL_DIR = path.join(USER_DATA_PATH, "tinytex");
+
 const isWindows = process.platform === "win32";
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
+
+// Log the installation path
+console.log("TinyTeX installation directory:", INSTALL_DIR);
 
 // Extract platform-specific info
 const getPlatformInfo = () => {
@@ -78,25 +84,43 @@ const getTinyTexURL = async () => {
 };
 
 // Get the binary path
-export function getBinaryPath() {
+export function getBinaryPath(binary = 'pdflatex') {
+  const tinyTexPath = path.join(INSTALL_DIR, "TinyTeX");
+  console.log(`Looking for ${binary} in:`, tinyTexPath);
+
   if (isWindows) {
-    return path.join(INSTALL_DIR, "TinyTeX", "bin", "windows", "pdflatex.exe");
+    return path.join(tinyTexPath, "bin", "windows", `${binary}.exe`);
   } else if (isMac) {
-    return path.join(INSTALL_DIR, "TinyTeX", "bin", "universal-darwin", "pdflatex");
+    // Check both Intel and Apple Silicon paths
+    const paths = [
+      path.join(tinyTexPath, "bin", "universal-darwin", binary),
+      path.join(tinyTexPath, "bin", "x86_64-darwin", binary),
+      path.join(tinyTexPath, "bin", "arm64-darwin", binary)
+    ];
+    
+    for (const binPath of paths) {
+      if (fs.existsSync(binPath)) {
+        console.log(`Found ${binary} at:`, binPath);
+        return binPath;
+      }
+    }
+    // Default to universal-darwin path
+    return paths[0];
   } else {
     // Linux - check both x86_64 and aarch64 paths
-    const possiblePaths = [
-      path.join(INSTALL_DIR, "TinyTeX", "bin", "x86_64-linux", "pdflatex"),
-      path.join(INSTALL_DIR, "TinyTeX", "bin", "aarch64-linux", "pdflatex")
+    const paths = [
+      path.join(tinyTexPath, "bin", "x86_64-linux", binary),
+      path.join(tinyTexPath, "bin", "aarch64-linux", binary)
     ];
 
-    for (const binPath of possiblePaths) {
+    for (const binPath of paths) {
       if (fs.existsSync(binPath)) {
+        console.log(`Found ${binary} at:`, binPath);
         return binPath;
       }
     }
     // Default to x86_64 path
-    return possiblePaths[0];
+    return paths[0];
   }
 }
 

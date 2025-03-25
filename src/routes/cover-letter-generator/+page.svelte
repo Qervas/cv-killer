@@ -166,19 +166,15 @@
                 {:else}
                     <div class="template-grid">
                         {#each templates as template}
-                            <div
-                                class="template-card {selectedTemplate?.id ===
-                                template.id
-                                    ? 'selected'
-                                    : ''}"
-                                on:click={() => (selectedTemplate = template)}
+                            <button
+                                type="button"
+                                class="template-card {selectedTemplate?.id === template.id ? 'selected' : ''}"
+                                on:click={() => selectTemplate(template)}
+                                on:keydown={(e) => e.key === 'Enter' && selectTemplate(template)}
                             >
                                 <h3>{template.name}</h3>
-                                <p>
-                                    {template.description ||
-                                        "No description provided"}
-                                </p>
-                            </div>
+                                <p>{template.description}</p>
+                            </button>
                         {/each}
                     </div>
                 {/if}
@@ -196,25 +192,15 @@
                 {:else}
                     <div class="company-grid">
                         {#each companies as company}
-                            <div
-                                class="company-card {selectedCompany?.id ===
-                                company.id
-                                    ? 'selected'
-                                    : ''}"
-                                on:click={() => (selectedCompany = company)}
+                            <button
+                                type="button"
+                                class="company-card {selectedCompany?.id === company.id ? 'selected' : ''}"
+                                on:click={() => selectCompany(company)}
+                                on:keydown={(e) => e.key === 'Enter' && selectCompany(company)}
                             >
                                 <h3>{company.name}</h3>
-                                {#if company.position}
-                                    <div class="position">
-                                        {company.position}
-                                    </div>
-                                {/if}
-                                {#if company.location}
-                                    <div class="location">
-                                        {company.location}
-                                    </div>
-                                {/if}
-                            </div>
+                                <p>{company.position}</p>
+                            </button>
                         {/each}
                     </div>
                 {/if}
@@ -325,11 +311,14 @@
 
     .template-card,
     .company-card {
-        border: 1px solid #ddd;
-        border-radius: 4px;
-        padding: 0.75rem;
+        border: none;
+        background: none;
         cursor: pointer;
-        transition: all 0.2s;
+        text-align: left;
+        width: 100%;
+        padding: 1rem;
+        border-radius: 8px;
+        transition: all 0.2s ease;
     }
 
     .template-card:hover,

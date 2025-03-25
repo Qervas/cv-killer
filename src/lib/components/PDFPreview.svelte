@@ -1,10 +1,13 @@
 <script>
     export let url;
+
+    // Ensure URL is properly formatted for both development and production
+    $: formattedUrl = url ? (url.startsWith('http') ? url : `http://localhost:3001${url}`) : null;
 </script>
 
 <div class="pdf-preview">
-    {#if url}
-        <iframe title="PDF Preview" src={url} class="pdf-iframe"></iframe>
+    {#if formattedUrl}
+        <iframe title="PDF Preview" src={formattedUrl} class="pdf-iframe"></iframe>
     {:else}
         <div class="no-preview">No PDF to preview</div>
     {/if}

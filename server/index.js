@@ -33,14 +33,12 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 try {
-  console.log("Starting server process, environment:", {
-    cwd: process.cwd(),
-    dirname: __dirname,
-    env: {
-      NODE_ENV: process.env.NODE_ENV,
-      ELECTRON_RUN: process.env.ELECTRON_RUN,
-      USER_DATA_PATH: process.env.USER_DATA_PATH,
-    },
+  console.log("Server starting with environment:", {
+    NODE_ENV: process.env.NODE_ENV,
+    ELECTRON_RUN: process.env.ELECTRON_RUN,
+    RESOURCE_PATH: process.env.RESOURCE_PATH,
+    __dirname: __dirname,
+    cwd: process.cwd()
   });
 
   // Ensure directories exist
@@ -62,56 +60,230 @@ process.on("disconnect", () => {
 });
 
 // Handle graceful shutdown
-process.on("SIGTERM", () => {
-  console.log("Received SIGTERM. Shutting down gracefully...");
-  process.exit(0);
-});
+function setupGracefulShutdown(server) {
+  let isShuttingDown = false;
+
+  const cleanup = async () => {
+    if (isShuttingDown) return;
+    isShuttingDown = true;
+
+    console.log("Gracefully shutting down server...");
+    
+    // Close the server
+    server.close(() => {
+      console.log("HTTP server closed");
+    });
+
+    // Clean up temporary directories
+    try {
+      console.log("Cleaning up temporary directories...");
+      
+      const dirsToClean = [PREVIEWS_DIR, path.join(process.cwd(), 'temp')];
+      
+      for (const dir of dirsToClean) {
+        if (fs.existsSync(dir)) {
+          try {
+            // Instead of deleting entire directories, just clear their contents
+            const files = fs.readdirSync(dir);
+            console.log(`Found ${files.length} files in ${dir}`);
+            
+            for (const file of files) {
+              try {
+                const filePath = path.join(dir, file);
+                // Skip deleting hidden files and system files
+                if (file.startsWith('.') || file === '.DS_Store') {
+                  continue;
+                }
+                
+                const stats = fs.statSync(filePath);
+                if (stats.isDirectory()) {
+                  // For subdirectories, we can use rmSync with force
+                  fs.rmSync(filePath, { recursive: true, force: true });
+                } else {
+                  // For files, use unlinkSync which is more specific
+                  fs.unlinkSync(filePath);
+                }
+                console.log(`Removed: ${filePath}`);
+              } catch (fileErr) {
+                console.error(`Error removing file ${file}:`, fileErr.message);
+                // Continue to next file
+              }
+            }
+          } catch (dirErr) {
+            console.error(`Error cleaning directory ${dir}:`, dirErr.message);
+            // Continue to next directory
+          }
+        } else {
+          console.log(`Directory does not exist: ${dir}`);
+        }
+      }
+    } catch (err) {
+      console.error("Error during cleanup:", err);
+    }
+
+    // Give active connections time to close before exiting
+    setTimeout(() => {
+      console.log("Server process exiting...");
+      process.exit(0);
+    }, 1000);
+  };
+
+  // Handle various shutdown signals
+  process.on("SIGTERM", cleanup);
+  process.on("SIGINT", cleanup);
+  process.on("SIGQUIT", cleanup);
+
+  // Handle unexpected errors
+  process.on("uncaughtException", (err) => {
+    console.error("Uncaught Exception:", err);
+    cleanup();
+  });
+
+  process.on("unhandledRejection", (reason, promise) => {
+    console.error("Unhandled Rejection:", reason);
+    cleanup();
+  });
+
+  // Handle IPC messages (for Electron integration)
+  process.on("message", (msg) => {
+    if (msg === "shutdown") {
+      console.log("Received shutdown message from parent process");
+      cleanup();
+    }
+  });
+
+  return cleanup;
+}
 
 const PORT = process.env.PORT || 3001;
 
 // Middleware
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "app://.", "*"],
+    origin: (origin, callback) => {
+      const allowedOrigins = [
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'http://localhost:3001',
+        'app://',
+        'file://'
+      ];
+      
+      // Allow requests with no origin (like mobile apps or curl requests)
+      if (!origin) return callback(null, true);
+      
+      if (allowedOrigins.some(allowedOrigin => origin.startsWith(allowedOrigin))) {
+        callback(null, true);
+      } else {
+        callback(new Error('Not allowed by CORS'));
+      }
+    },
     credentials: true,
-  }),
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization']
+  })
 );
 
-app.use(express.json());
-app.use("/public", express.static(path.join(__dirname, "public")));
-app.use("/build", express.static(path.join(__dirname, "../build")));
-app.use(express.static(path.join(__dirname, "../build")));
-
-// Also serve from user data path in Electron environment
-if (process.env.ELECTRON_RUN === "true" && process.env.USER_DATA_PATH) {
-  app.use(
-    "/build",
-    express.static(path.join(process.env.USER_DATA_PATH, "build")),
-  );
-  app.use(
-    "/public",
-    express.static(path.join(process.env.USER_DATA_PATH, "public")),
-  );
+// Add development mode logging for debugging
+if (process.env.NODE_ENV === 'development') {
+  app.use((req, res, next) => {
+    console.log(`${req.method} ${req.url} - Origin: ${req.get('origin')}`);
+    next();
+  });
 }
 
-// Ensure directories exist
-fs.ensureDirSync(path.join(__dirname, "public/previews"));
-fs.ensureDirSync(path.join(__dirname, "../build"));
+app.use(express.json());
 
-// Use API routes
+// Configure static file serving based on environment
+const isDev = process.env.NODE_ENV === 'development';
+const isElectron = process.env.ELECTRON_RUN === 'true';
+
+// Serve static files from public directory
+app.use('/public', express.static(PUBLIC_DIR, {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', 'inline');
+    }
+  }
+}));
+
+// Serve preview files
+app.use('/public/previews', express.static(PREVIEWS_DIR, {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', 'inline');
+    }
+  }
+}));
+
+// Serve build files
+app.use('/build', express.static(BUILD_DIR, {
+  setHeaders: (res, path) => {
+    if (path.endsWith('.pdf')) {
+      res.set('Content-Type', 'application/pdf');
+      res.set('Content-Disposition', 'inline');
+    }
+  }
+}));
+
+// API routes
 app.use("/api", apiRoutes);
 
-// Direct root health check endpoint
-app.get("/api/health", (req, res) => {
-  res.json({
-    status: "ok",
-    time: new Date().toISOString(),
-    serverInfo: {
-      port: PORT,
-      paths: pathInfo,
-      environment: process.env.NODE_ENV || "development",
-    },
-  });
+// Add a comprehensive health check endpoint
+app.get('/api/health', (req, res) => {
+  try {
+    const health = {
+      status: 'ok',
+      timestamp: new Date().toISOString(),
+      environment: process.env.NODE_ENV,
+      server: {
+        uptime: process.uptime(),
+        memoryUsage: process.memoryUsage(),
+        pid: process.pid
+      },
+      paths: {
+        static: [PUBLIC_DIR, PREVIEWS_DIR, BUILD_DIR].filter(p => fs.existsSync(p)),
+        current: __dirname,
+        resources: process.env.RESOURCE_PATH
+      }
+    };
+
+    // Check if we can access critical directories
+    health.directories = {
+      public: fs.existsSync(PUBLIC_DIR),
+      previews: fs.existsSync(PREVIEWS_DIR),
+      build: fs.existsSync(BUILD_DIR)
+    };
+
+    res.json(health);
+  } catch (error) {
+    res.status(500).json({
+      status: 'error',
+      error: error.message,
+      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+    });
+  }
+});
+
+// Improve static file serving with better error handling
+app.use('/public', (req, res, next) => {
+  console.log(`Static file request: ${req.path}`);
+  
+  // Try each static path until we find the file
+  const tryPaths = [PUBLIC_DIR, PREVIEWS_DIR, BUILD_DIR].filter(p => fs.existsSync(p));
+  
+  for (const staticPath of tryPaths) {
+    const filePath = path.join(staticPath, req.path);
+    if (fs.existsSync(filePath)) {
+      console.log(`Serving ${req.path} from ${staticPath}`);
+      return res.sendFile(filePath);
+    }
+  }
+
+  console.log(`File not found in any static path: ${req.path}`);
+  next();
 });
 
 // Serve SPA routes for client-side navigation
@@ -130,70 +302,12 @@ app.get("*", (req, res) => {
   }
 });
 
-// Add graceful shutdown handler
-function setupGracefulShutdown(server) {
-  let isShuttingDown = false;
-
-  async function cleanup() {
-    if (isShuttingDown) return;
-    isShuttingDown = true;
-
-    console.log('Server is shutting down...');
-
-    // Close the server
-    server.close(() => {
-      console.log('Server closed');
-    });
-
-    // Clean up temp directories
-    try {
-      const tempDirs = [
-        path.join(PUBLIC_DIR, 'previews'),
-        path.join(__dirname, 'temp')
-      ];
-
-      for (const dir of tempDirs) {
-        if (fs.existsSync(dir)) {
-          fs.rmSync(dir, { recursive: true, force: true });
-          console.log(`Cleaned up directory: ${dir}`);
-        }
-      }
-    } catch (err) {
-      console.error('Error cleaning temp directories:', err);
-    }
-
-    // Give active connections time to close
-    await new Promise(resolve => setTimeout(resolve, 1000));
-
-    console.log('Cleanup complete');
-    process.exit(0);
-  }
-
-  // Handle various shutdown signals
-  process.on('SIGTERM', cleanup);
-  process.on('SIGINT', cleanup);
-  process.on('SIGQUIT', cleanup);
-  process.on('message', (msg) => {
-    if (msg === 'shutdown') {
-      cleanup();
-    }
-  });
-
-  // Handle uncaught errors
-  process.on('uncaughtException', (err) => {
-    console.error('Uncaught Exception:', err);
-    cleanup();
-  });
-
-  process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
-    cleanup();
-  });
-}
-
 // Start the server
 const server = app.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
+
+  // Set up graceful shutdown
+  setupGracefulShutdown(server);
 
   // Signal ready state for Electron integration
   if (process.send) {
@@ -205,9 +319,6 @@ const server = app.listen(PORT, () => {
     }
   }
 });
-
-// Setup graceful shutdown
-setupGracefulShutdown(server);
 
 // Handle server errors
 server.on("error", (err) => {
