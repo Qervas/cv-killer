@@ -8,35 +8,15 @@ const util = require('util');
 const execPromise = util.promisify(exec);
 const log = require('electron-log');
 
-// Configure electron-log
 log.transports.file.level = 'info';
 log.transports.console.level = isDev ? 'debug' : 'info';
-log.transports.file.maxSize = 5 * 1024 * 1024; // 5MB
-log.transports.file.maxFiles = 3;
 
-// Add a custom transport for the debug window
-if (enableDebug) {
-  log.transports.debugWindow = {
-    level: 'debug',
-    format: '{text}',
-    write: (message) => {
-      if (debugWindow && !debugWindow.isDestroyed()) {
-        sendToDebugWindow(message, 'info');
-      }
-    }
-  };
-}
-
-// Log application startup information
+// Replace console.log with log
 log.info('Application starting...');
 log.info('Environment:', {
   isDev,
   resourcePath: process.resourcesPath,
-  userData: app.getPath('userData'),
-  nodeVersion: process.version,
-  electronVersion: process.versions.electron,
-  platform: process.platform,
-  arch: process.arch
+  userData: app.getPath('userData')
 });
 
 ipcMain.handle("retry-server", () => {
@@ -199,6 +179,7 @@ function createDebugWindow() {
 function sendToDebugWindow(message, type = "info") {
   if (debugWindow && !debugWindow.isDestroyed()) {
     try {
+      // Escape special characters that might break the JavaScript
       const safeMessage = String(message).replace(/[\\"\n\r\t]/g, (match) => {
         return {
           "\\": "\\\\",
@@ -209,25 +190,27 @@ function sendToDebugWindow(message, type = "info") {
         }[match];
       });
 
+      // Simpler approach to sending messages
       debugWindow.webContents
         .executeJavaScript(
           `
-          try {
-            const logLine = document.createElement('div');
-            logLine.className = '${type}';
-            logLine.textContent = "${safeMessage}";
-            document.getElementById('logs').appendChild(logLine);
-            window.scrollTo(0, document.body.scrollHeight);
-          } catch (e) {
-            console.error("Error adding log:", e);
-          }
-        `,
+        try {
+          const logLine = document.createElement('div');
+          logLine.className = '${type}';
+          logLine.textContent = "${safeMessage}";
+          document.getElementById('logs').appendChild(logLine);
+          window.scrollTo(0, document.body.scrollHeight);
+        } catch (e) {
+          console.error("Error adding log:", e);
+        }
+      `,
         )
         .catch((err) => {
-          log.error("Debug window logging error:", err.message);
+          // Just log the error locally and continue
+          console.error("Debug window logging error:", err.message);
         });
     } catch (error) {
-      log.error("Failed to format debug message:", error);
+      console.error("Failed to format debug message:", error);
     }
   }
 }
@@ -347,24 +330,19 @@ function getNodePath() {
 // Add cleanup function at the top level
 async function cleanupApplication() {
   console.log('Cleaning up application resources...');
-  isShuttingDown = true;
 
-  // First, try graceful shutdown of server process
+  // Kill server process if it exists
   if (serverProcess) {
     try {
       const isRunning = serverProcess.pid && !serverProcess.killed;
       if (isRunning) {
-        console.log(`Attempting graceful shutdown of server process (PID: ${serverProcess.pid})`);
-        
-        // Send SIGTERM first
+        console.log(`Killing server process (PID: ${serverProcess.pid})`);
         serverProcess.kill('SIGTERM');
-        
         // Give it a moment to shut down gracefully
         await new Promise(resolve => setTimeout(resolve, 1000));
         
         // Force kill if still running
         if (!serverProcess.killed) {
-          console.log('Server still running, forcing termination...');
           serverProcess.kill('SIGKILL');
         }
       }
@@ -374,71 +352,11 @@ async function cleanupApplication() {
     serverProcess = null;
   }
 
-  // Enhanced port cleanup with retries and force close
+  // Clean up any remaining processes on our ports
   try {
-    console.log('Cleaning up ports and connections...');
-    
-    // On macOS, use a more aggressive approach to close lingering connections
-    if (process.platform === 'darwin') {
-      try {
-        // First try to identify all processes using our ports
-        const { stdout } = await execPromise('lsof -i :3001-3010 -n -P');
-        
-        const processes = stdout.split('\n')
-          .slice(1) // Skip header
-          .filter(Boolean)
-          .map(line => {
-            const parts = line.trim().split(/\s+/);
-            return {
-              pid: parseInt(parts[1], 10),
-              fd: parts[3].replace(/[uwx]/g, ''), // Clean up file descriptor
-              state: parts[parts.length - 1]
-            };
-          });
-
-        // Group by PID to handle all connections for each process
-        const pidGroups = processes.reduce((acc, curr) => {
-          if (!acc[curr.pid]) acc[curr.pid] = [];
-          acc[curr.pid].push(curr);
-          return acc;
-        }, {});
-
-        // Handle each process group
-        for (const [pid, connections] of Object.entries(pidGroups)) {
-          if (parseInt(pid, 10) === process.pid) continue; // Skip our own process
-
-          console.log(`Cleaning up ${connections.length} connections for PID ${pid}`);
-          
-          try {
-            // Try SIGTERM first
-            process.kill(parseInt(pid, 10), 'SIGTERM');
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Check if process still exists and has CLOSE_WAIT connections
-            try {
-              const { stdout: checkStdout } = await execPromise(`lsof -p ${pid} -i :3001-3010 -n -P`);
-              if (checkStdout.includes('CLOSE_WAIT')) {
-                console.log(`Force closing CLOSE_WAIT connections for PID ${pid}`);
-                process.kill(parseInt(pid, 10), 'SIGKILL');
-              }
-            } catch (e) {
-              // Process might be gone already, which is fine
-            }
-          } catch (err) {
-            console.error(`Error cleaning up PID ${pid}:`, err);
-          }
-        }
-      } catch (err) {
-        if (!err.message.includes('No such process')) {
-          console.error('Error in enhanced port cleanup:', err);
-        }
-      }
-    }
-
-    // Additional cleanup for any remaining connections
     await cleanupPorts(3001, 3010);
   } catch (err) {
-    console.error('Error in port cleanup:', err);
+    console.error('Error cleaning up ports:', err);
   }
 
   // Clean up temp directories with improved error handling
@@ -451,53 +369,54 @@ async function cleanupApplication() {
     for (const dir of tempDirs) {
       if (fs.existsSync(dir)) {
         try {
+          // Use rimraf pattern with safety checks
           const files = fs.readdirSync(dir);
           for (const file of files) {
             try {
               const filePath = path.join(dir, file);
-              // Skip the TinyTeX directory
-              if (filePath.includes('tinytex')) {
-                console.log('Preserving TinyTeX directory:', filePath);
-                continue;
-              }
-              
               const fileStats = fs.statSync(filePath);
+              
               if (fileStats.isDirectory()) {
+                // Only delete subdirectories and files, not the directory itself
                 fs.rmSync(filePath, { recursive: true, force: true });
               } else {
+                // Delete individual files
                 fs.unlinkSync(filePath);
               }
             } catch (fileErr) {
               console.error(`Error removing file ${file} in ${dir}:`, fileErr);
+              // Continue with next file
             }
           }
           console.log(`Cleaned up files in directory: ${dir}`);
         } catch (rmErr) {
           console.error(`Error accessing directory ${dir}:`, rmErr);
+          // If folder deletion fails, try the next one
         }
       }
     }
   } catch (err) {
     console.error('Error cleaning temp directories:', err);
   }
-
-  // Reset state
-  mainWindow = null;
-  serverProcess = null;
-  if (debugWindow) {
-    debugWindow.destroy();
-    debugWindow = null;
-  }
 }
 
-// Modify the app quit handler to ensure cleanup
-app.on("window-all-closed", async () => {
+// Modify the app quit handler
+app.on("window-all-closed", async function () {
   isShuttingDown = true;
   
-  // Perform cleanup before quitting
-  await cleanupApplication();
+  // Gracefully shut down all processes
+  for (const [type, process] of processes) {
+    try {
+      process.kill('SIGTERM');
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      if (process.killed === false) {
+        process.kill('SIGKILL');
+      }
+    } catch (err) {
+      console.error(`Error shutting down ${type}:`, err);
+    }
+  }
   
-  // Quit the app (except on macOS)
   if (process.platform !== "darwin") {
     app.quit();
   }
@@ -505,23 +424,18 @@ app.on("window-all-closed", async () => {
 
 // Add handlers for other termination scenarios
 app.on('before-quit', async (event) => {
-  if (!isShuttingDown) {
-    event.preventDefault(); // Prevent immediate quit
-    isShuttingDown = true;
-    await cleanupApplication();
-    app.exit(); // Force exit after cleanup
-  }
+  console.log('Application is about to quit...');
+  event.preventDefault(); // Prevent immediate quit
+  await cleanupApplication();
+  app.exit(); // Force exit after cleanup
 });
 
 // Handle process signals
 ['SIGINT', 'SIGTERM', 'SIGQUIT'].forEach(signal => {
   process.on(signal, async () => {
-    if (!isShuttingDown) {
-      console.log(`Received ${signal}, cleaning up...`);
-      isShuttingDown = true;
-      await cleanupApplication();
-      process.exit(0);
-    }
+    console.log(`Received ${signal}, cleaning up...`);
+    await cleanupApplication();
+    process.exit(0);
   });
 });
 
@@ -858,99 +772,47 @@ async function createMainWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
-      webSecurity: !isDev,
-      webviewTag: true
+      webSecurity: !isDev
     },
-    show: false,
+    show: false, // Don't show until content is ready
     backgroundColor: '#1a1b1e'
   });
 
-  // Set up error handling for window loading
-  win.webContents.on('did-fail-load', async (event, errorCode, errorDescription) => {
-    console.error('Window failed to load:', errorDescription);
-    
-    // If in development mode and the first load fails, try the dev server
-    if (isDev && errorCode === -102 && event.target.getURL().includes('localhost:3001')) {
-      console.log('Retrying with Vite dev server...');
-      try {
-        await win.loadURL('http://localhost:5173');
-        return;
-      } catch (err) {
-        console.error('Failed to load dev server:', err);
-      }
-    }
-    
-    win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
-    win.webContents.executeJavaScript(`
-      document.getElementById('status').innerHTML = 'Failed to load application: ${errorDescription}<br>Retrying...';
-      document.getElementById('status').className = 'error';
-      document.getElementById('retry-button').style.display = 'block';
-    `);
-  });
-
   // Load the loading screen first
-  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
+  win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(LOADING_HTML)}`);
   win.show();
 
-  // In development mode, try to connect to Vite dev server first
-  if (isDev) {
-    try {
-      console.log('Attempting to connect to Vite dev server...');
-      await win.loadURL('http://localhost:5173');
-      console.log('Successfully connected to Vite dev server');
-      return win;
-    } catch (err) {
-      console.log('Failed to connect to Vite dev server, falling back to production mode:', err);
-    }
-  }
-
-  // Production mode or dev server fallback
+  // Set up server connection monitoring
+  let serverCheckTimeout;
   let serverStartAttempts = 0;
   const MAX_SERVER_ATTEMPTS = 3;
-  const RETRY_DELAY = 2000;
 
   const connectToServer = async () => {
     try {
       const { port } = await initializeServer();
       const appUrl = `http://localhost:${port}`;
       
-      await win.webContents.executeJavaScript(`
-        document.getElementById('status').textContent = 'Connecting to application server...';
-      `);
+      // Check if server is actually responding
+      const response = await fetch(`${appUrl}/api/health`);
+      if (!response.ok) throw new Error('Server health check failed');
 
-      // Wait for server to be ready
-      let serverReady = false;
-      for (let i = 0; i < 10; i++) {
-        try {
-          const response = await fetch(`${appUrl}/api/health`);
-          if (response.ok) {
-            serverReady = true;
-            break;
-          }
-        } catch (e) {
-          await new Promise(resolve => setTimeout(resolve, 1000));
-        }
-      }
-
-      if (!serverReady) {
-        throw new Error('Server health check failed');
-      }
-
+      // Load the actual application
       await win.loadURL(appUrl);
       console.log('Application loaded successfully');
-
     } catch (error) {
       console.error('Server connection error:', error);
       serverStartAttempts++;
 
       if (serverStartAttempts < MAX_SERVER_ATTEMPTS) {
-        await win.webContents.executeJavaScript(`
+        // Update loading screen with retry message
+        win.webContents.executeJavaScript(`
           document.getElementById('status').innerHTML = 'Connection failed.<br>Retrying... (${serverStartAttempts}/${MAX_SERVER_ATTEMPTS})';
         `);
-        await new Promise(resolve => setTimeout(resolve, RETRY_DELAY));
+        await new Promise(resolve => setTimeout(resolve, 2000));
         return connectToServer();
       } else {
-        await win.webContents.executeJavaScript(`
+        // Show error screen
+        win.webContents.executeJavaScript(`
           document.getElementById('status').innerHTML = 'Unable to connect to the application server.<br>Please check your connection and try again.';
           document.getElementById('status').className = 'error';
           document.getElementById('retry-button').style.display = 'block';
@@ -959,7 +821,14 @@ async function createMainWindow() {
     }
   };
 
+  // Start the connection process
   await connectToServer();
+
+  // Handle window state
+  win.on('ready-to-show', () => {
+    win.show();
+  });
+
   return win;
 }
 
@@ -974,7 +843,7 @@ app.on("activate", function () {
 
 // Handle uncaught exceptions
 process.on("uncaughtException", (error) => {
-  log.error("Uncaught Exception:", error);
+  console.error("Uncaught Exception:", error);
 
   if (enableDebug && debugWindow) {
     sendToDebugWindow(`Uncaught Exception: ${error.message}`, "error");
@@ -984,15 +853,9 @@ process.on("uncaughtException", (error) => {
     dialog.showErrorBox(
       "Unexpected Error",
       `An unexpected error occurred: ${error.message}\n\n` +
-        `Please check the logs at: ${log.transports.file.getFile().path}\n\n` +
         `Please restart the application.`,
     );
   }
-});
-
-// Add unhandled rejection handler
-process.on('unhandledRejection', (reason, promise) => {
-  log.error('Unhandled Rejection at:', promise, 'reason:', reason);
 });
 
 // Add a more reliable port cleanup function for macOS

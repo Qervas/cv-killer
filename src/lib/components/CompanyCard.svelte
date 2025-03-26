@@ -10,15 +10,10 @@
     }
 </script>
 
-<button 
-    type="button"
-    class="company-card {selected ? 'selected' : ''}" 
-    on:click={handleClick}
-    on:keydown={(e) => e.key === 'Enter' && handleClick()}
->
+<div class="company-card {selected ? 'selected' : ''}" on:click={handleClick}>
     <h3>{company.name}</h3>
     {#if company.position}
-        <p>{company.position}</p>
+        <div class="position">{company.position}</div>
     {/if}
     {#if company.location}
         <div class="location">{company.location}</div>
@@ -30,18 +25,16 @@
             Created: {new Date(company.createdAt).toLocaleDateString()}
         {/if}
     </div>
-</button>
+</div>
 
 <style>
     .company-card {
         padding: 1rem;
-        border: none;
-        background: none;
+        border: 1px solid #ccc;
+        border-radius: 4px;
         cursor: pointer;
-        text-align: left;
-        width: 100%;
-        border-radius: 8px;
-        transition: all 0.2s ease;
+        margin-bottom: 0.5rem;
+        transition: all 0.2s;
     }
 
     .company-card:hover {
@@ -56,6 +49,11 @@
     h3 {
         margin: 0;
         font-size: 1.2rem;
+    }
+
+    .position {
+        font-weight: 500;
+        margin-top: 0.5rem;
     }
 
     .location {

@@ -4,12 +4,6 @@
 		<meta charset="utf-8" />
 		<link rel="icon" href="%sveltekit.assets%/favicon.png" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<script>
-			// Configure base URL for API requests
-			window.API_BASE_URL = window.location.protocol === 'app:' || window.location.protocol === 'file:'
-				? 'http://localhost:3001'
-				: '';
-		</script>
 		%sveltekit.head%
 	</head>
 	<body data-sveltekit-preload-data="hover">

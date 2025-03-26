@@ -160,37 +160,10 @@ const PORT = process.env.PORT || 3001;
 // Middleware
 app.use(
   cors({
-    origin: (origin, callback) => {
-      const allowedOrigins = [
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
-        'http://localhost:3001',
-        'app://',
-        'file://'
-      ];
-      
-      // Allow requests with no origin (like mobile apps or curl requests)
-      if (!origin) return callback(null, true);
-      
-      if (allowedOrigins.some(allowedOrigin => origin.startsWith(allowedOrigin))) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'));
-      }
-    },
+    origin: ["http://localhost:5173", "http://127.0.0.1:5173", "app://.", "*"],
     credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
-  })
+  }),
 );
-
-// Add development mode logging for debugging
-if (process.env.NODE_ENV === 'development') {
-  app.use((req, res, next) => {
-    console.log(`${req.method} ${req.url} - Origin: ${req.get('origin')}`);
-    next();
-  });
-}
 
 app.use(express.json());
 
@@ -198,37 +171,39 @@ app.use(express.json());
 const isDev = process.env.NODE_ENV === 'development';
 const isElectron = process.env.ELECTRON_RUN === 'true';
 
-// Serve static files from public directory
-app.use('/public', express.static(PUBLIC_DIR, {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.pdf')) {
-      res.set('Content-Type', 'application/pdf');
-      res.set('Content-Disposition', 'inline');
-    }
-  }
-}));
+// Determine the correct static file paths based on environment
+const staticPaths = [];
 
-// Serve preview files
-app.use('/public/previews', express.static(PREVIEWS_DIR, {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.pdf')) {
-      res.set('Content-Type', 'application/pdf');
-      res.set('Content-Disposition', 'inline');
-    }
+if (process.env.ELECTRON_RUN === "true") {
+  if (process.env.NODE_ENV === "development") {
+    // Development paths
+    staticPaths.push(path.join(__dirname, "..", "public"));
+  } else {
+    // Production paths - add all possible locations
+    staticPaths.push(
+      path.join(process.env.RESOURCE_PATH, "app.asar", "public"),
+      path.join(process.env.RESOURCE_PATH, "app", "public"),
+      path.join(__dirname, "..", "public")
+    );
   }
-}));
+}
 
-// Serve build files
-app.use('/build', express.static(BUILD_DIR, {
-  setHeaders: (res, path) => {
-    if (path.endsWith('.pdf')) {
-      res.set('Content-Type', 'application/pdf');
-      res.set('Content-Disposition', 'inline');
-    }
+// Log all paths for debugging
+console.log("Static serving paths:", staticPaths);
+
+// Serve static files from all possible locations
+staticPaths.forEach(staticPath => {
+  if (fs.existsSync(staticPath)) {
+    console.log(`Serving static files from: ${staticPath}`);
+    app.use("/public", express.static(staticPath));
   }
-}));
+});
 
-// API routes
+// Ensure directories exist
+fs.ensureDirSync(PREVIEWS_DIR);
+fs.ensureDirSync(BUILD_DIR);
+
+// Use API routes
 app.use("/api", apiRoutes);
 
 // Add a comprehensive health check endpoint
@@ -244,7 +219,7 @@ app.get('/api/health', (req, res) => {
         pid: process.pid
       },
       paths: {
-        static: [PUBLIC_DIR, PREVIEWS_DIR, BUILD_DIR].filter(p => fs.existsSync(p)),
+        static: staticPaths.filter(p => fs.existsSync(p)),
         current: __dirname,
         resources: process.env.RESOURCE_PATH
       }
@@ -272,7 +247,7 @@ app.use('/public', (req, res, next) => {
   console.log(`Static file request: ${req.path}`);
   
   // Try each static path until we find the file
-  const tryPaths = [PUBLIC_DIR, PREVIEWS_DIR, BUILD_DIR].filter(p => fs.existsSync(p));
+  const tryPaths = staticPaths.filter(p => fs.existsSync(p));
   
   for (const staticPath of tryPaths) {
     const filePath = path.join(staticPath, req.path);

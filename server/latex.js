@@ -3,9 +3,7 @@ import fs from "fs-extra";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getBinaryPath } from "./latex-installer.js";
-import { promisify } from "util";
 
-const execAsync = promisify(exec);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -54,39 +52,29 @@ Please check for LaTeX syntax errors or try a different template.
 async function installMissingPackage(packageName) {
   try {
     console.log(`Installing missing LaTeX package: ${packageName}`);
-    const tlmgrPath = getBinaryPath('tlmgr');
+    const tlmgrPath = getBinaryPath().replace('pdflatex', 'tlmgr');
 
     if (!fs.existsSync(tlmgrPath)) {
       console.error("tlmgr not found at:", tlmgrPath);
       return false;
     }
 
-    // Initialize tlmgr first (needed after fresh install)
-    try {
-      await execAsync(`"${tlmgrPath}" init-usertree`);
-      await execAsync(`"${tlmgrPath}" option repository https://ctan.math.illinois.edu/systems/texlive/tlnet`);
-      await execAsync(`"${tlmgrPath}" update --self`);
-    } catch (initError) {
-      console.log("tlmgr initialization error (non-critical):", initError);
-      // Continue anyway as the error might be because it's already initialized
-    }
-
     // Run tlmgr to install the package
-    const cmd = `"${tlmgrPath}" install ${packageName}`;
+    const cmd = `${tlmgrPath} install ${packageName}`;
     console.log("Running command:", cmd);
 
-    const { stdout, stderr } = await execAsync(cmd, { timeout: 120000 });
-    console.log("Package installation output:", stdout);
-    if (stderr) console.error("Package installation stderr:", stderr);
-
-    // Check if installation was successful
-    if (stdout.includes("successfully")) {
-      console.log(`Successfully installed ${packageName}`);
-      return true;
-    } else {
-      console.log(`Package ${packageName} might already be installed or failed to install`);
-      return false;
-    }
+    return new Promise((resolve) => {
+      exec(cmd, { timeout: 120000 }, (error, stdout, stderr) => {
+        if (error) {
+          console.error("Package installation failed:", error);
+          console.log(stdout);
+          resolve(false);
+        } else {
+          console.log("Package installation succeeded:", stdout);
+          resolve(true);
+        }
+      });
+    });
   } catch (err) {
     console.error("Error installing package:", err);
     return false;
@@ -114,63 +102,13 @@ async function compileLatex(templateContent, companyData, outputPath) {
     // Try to generate PDF with user template first
     let success = await tryGeneratePDF(tempDir, processedTemplate, outputPath);
 
-    // If failed, try to install missing packages
+    // If failed, try to install cm-super package which contains many common fonts
     if (!success) {
-      console.log("First attempt failed - installing required packages");
-      
-      // Common LaTeX packages needed for CV/Cover Letter templates
-      const commonPackages = [
-        'collection-basic',
-        'collection-latex',
-        'enumitem',
-        'titlesec',
-        'geometry',
-        'hyperref',
-        'fontspec',
-        'xcolor',
-        'graphicx',
-        'fancyhdr',
-        'lastpage',
-        'parskip',
-        'babel-english',
-        'microtype',
-        'cm-super',
-        'collection-fontsrecommended'
-      ];
-
-      // Install all common packages
-      for (const pkg of commonPackages) {
-        console.log(`Installing package: ${pkg}`);
-        await installMissingPackage(pkg);
-      }
+      console.log("First attempt failed - trying to install required packages");
+      await installMissingPackage("cm-super");
 
       // Try again after installing packages
       success = await tryGeneratePDF(tempDir, processedTemplate, outputPath);
-
-      // If still failed, try to detect missing packages from the log
-      if (!success) {
-        const logFile = path.join(tempDir, "document.log");
-        if (fs.existsSync(logFile)) {
-          const logContent = await fs.readFile(logFile, 'utf8');
-          const missingPackages = [];
-          
-          // Extract missing package names from the log
-          const matches = logContent.matchAll(/File `([^']+\.sty)' not found/g);
-          for (const match of matches) {
-            const pkg = match[1].replace('.sty', '');
-            missingPackages.push(pkg);
-          }
-
-          if (missingPackages.length > 0) {
-            console.log("Detected additional missing packages:", missingPackages);
-            for (const pkg of missingPackages) {
-              await installMissingPackage(pkg);
-            }
-            // Try one more time after installing detected packages
-            success = await tryGeneratePDF(tempDir, processedTemplate, outputPath);
-          }
-        }
-      }
     }
 
     // If user template still failed, try fallback template
